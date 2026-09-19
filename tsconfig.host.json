@@ -134,6 +134,8 @@
     "apps/desktop/scripts/**/*.ts",
     "apps/desktop/tests/**/*.ts",
     "apps/desktop-host/tests/**/*.ts",
+    "apps/pixies/scripts/**/*.ts",
+    "apps/pixies/tests/**/*.ts",
     "benchmarks/**/*.ts",
     "packages/*/*/tests/**/*.ts",
     "scripts/**/*.ts",
@@ -382,6 +384,7 @@
     { "path": "./packages/preset/persona" },
     { "path": "./packages/guard/repeat-tool-reminder" },
     { "path": "./packages/extensions/cordis-host-runner" },
+    { "path": "./packages/extensions/pixies/tsconfig.host.json" },
     { "path": "./packages/extensions/tool-cordis" },
     { "path": "./packages/hooks/hook-protocol" },
     { "path": "./packages/hooks/hooks-claude-code" },
@@ -405,6 +408,7 @@
     { "path": "./packages/lsp/tool-lsp" },
     { "path": "./apps/cli" },
     { "path": "./apps/desktop-host" },
-    { "path": "./apps/desktop" }
+    { "path": "./apps/desktop" },
+    { "path": "./apps/pixies" }
   ]
 }

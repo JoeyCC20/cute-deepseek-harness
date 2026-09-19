@@ -1,0 +1,7 @@
+# Pixies bundle patch: insert the pixies host plugin into any composition that
+# loads this bundle. Purely additive — the plugin only observes waterfalls and
+# folds session events; it never claims an answerer chain.
+
+- insert:
+    - id: pixies
+      name: '@deepseek-ai/dsh-pixies'

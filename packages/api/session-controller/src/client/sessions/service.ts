@@ -55,6 +55,12 @@ export interface SessionListState {
   ids: SessionId[]
   /** Host/catalog rows plus local fallback rows for live Client generations; only `ids` expresses Host-list membership. */
   byId: Record<SessionId, SessionSummary>
+  /**
+   * Local preference: the session the user most recently selected. Not projected
+   * by the host (no source-of-truth on the host side); consumers prefer it when
+   * present and still listed, otherwise fall back to `ids[0]`.
+   */
+  current?: SessionId
   /** Arrival lifecycle projected 1:1 from the manager snapshot (see SessionListPhase): empty-with-ready means "truly no sessions". */
   phase: SessionListPhase
   /** Direct durable catalogs keyed by their selected parent address. */
