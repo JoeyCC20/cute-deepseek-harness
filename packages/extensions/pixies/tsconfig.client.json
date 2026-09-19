@@ -11,6 +11,7 @@
     "src/client/feed.ts",
     "src/client/character.tsx",
     "src/client/shell.tsx",
+    "src/client/window-drag.ts",
     "src/presentation.ts",
     "src/types.ts"
   ],

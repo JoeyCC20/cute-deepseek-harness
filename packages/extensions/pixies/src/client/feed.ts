@@ -25,13 +25,27 @@ export interface AssistantMessageEventData {
 
 /**
  * Feed one session event into the store: assistant/message becomes the
- * character's speech; everything else is ignored.
+ * character's speech; turn/start begins a thinking round, turn/end (or a
+ * follow-up assistant/message) ends it. Thinking is the gap between the user
+ * sending a prompt and the LLM producing its first visible reply — without
+ * an explicit signal the bubble looks frozen during a multi-second call.
  * @param store - the Pixies store to publish into.
  * @param sessionId - the session that produced the event.
  * @param event - one session event from a follow stream or recorded replay.
  */
 export function feedSessionEvent(store: PixiesStore, sessionId: string, event: SessionEventLike): void {
+  if (event.type === 'turn/start') {
+    store.beginThinking(sessionId)
+    return
+  }
+  if (event.type === 'turn/end') {
+    store.endThinking(sessionId)
+    return
+  }
   if (event.type !== 'assistant/message') return
   const presentation = presentationFromAssistantMessage(sessionId, event.seq, event.data as AssistantMessageEventData)
-  if (presentation !== null) store.speak(presentation)
+  if (presentation !== null) {
+    store.speak(presentation)
+    store.endThinking(sessionId)
+  }
 }

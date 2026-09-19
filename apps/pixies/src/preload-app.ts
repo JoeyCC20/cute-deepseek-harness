@@ -10,6 +10,15 @@ contextBridge.exposeInMainWorld('dshPixies', {
   collapse: (): void => { void ipcRenderer.invoke('pixies:window:collapse') },
   startSpeech: (): void => { void ipcRenderer.invoke('pixies:speech:start') },
   stopSpeech: (): void => { void ipcRenderer.invoke('pixies:speech:stop') },
+  /**
+   * Send one pointermove delta while the user drags the floating window.
+   * The delta is window-relative: positive X moves the window right, positive
+   * Y moves it down. The main process clamps the resulting position to the
+   * display work area.
+   */
+  dragBy: (deltaX: number, deltaY: number): void => {
+    ipcRenderer.send('pixies:drag:move', deltaX, deltaY)
+  },
   onSpeech: (listener: (event: unknown) => void): (() => void) => {
     const channel = (_event: Electron.IpcRendererEvent, payload: unknown): void => { listener(payload) }
     ipcRenderer.on('pixies:speech', channel)

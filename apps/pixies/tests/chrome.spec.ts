@@ -4,7 +4,7 @@
  * injected fakes, no Electron display required.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { createPixiesChrome, topRightPosition } from '../src/chrome.ts'
+import { clampPositionToWorkArea, createPixiesChrome, topRightPosition } from '../src/chrome.ts'
 import type { PixiesChromeDeps, PixiesTrayLike, PixiesWindowLike } from '../src/chrome.ts'
 
 interface WindowState {
@@ -26,6 +26,7 @@ function fakeWindow(): { window: PixiesWindowLike; state: WindowState } {
     focus: vi.fn(),
     setPosition: (x, y) => { state.x = x; state.y = y },
     setSize: (width, height) => { state.width = width; state.height = height },
+    getBounds: () => ({ x: state.x, y: state.y, width: state.width, height: state.height }),
     loadURL: vi.fn(async () => {}),
     once: vi.fn(),
   }
@@ -212,5 +213,89 @@ describe('mini/expanded modes (phase 3)', () => {
     expect(windowState.height).toBe(640)
     expect(windowState.x).toBe(1008)
     expect(windowState.y).toBe(12)
+  })
+})
+
+describe('clampPositionToWorkArea', () => {
+  it('keeps positions inside the work area untouched', () => {
+    expect(clampPositionToWorkArea({ x: 100, y: 100 }, { width: 420, height: 640 }, { width: 1440, height: 900 }))
+      .toEqual({ x: 100, y: 100 })
+  })
+
+  it('clamps negative positions to zero', () => {
+    expect(clampPositionToWorkArea({ x: -50, y: -10 }, { width: 420, height: 640 }, { width: 1440, height: 900 }))
+      .toEqual({ x: 0, y: 0 })
+  })
+
+  it('pins the window edge when dragged past the screen edge', () => {
+    expect(clampPositionToWorkArea({ x: 1500, y: 800 }, { width: 420, height: 640 }, { width: 1440, height: 900 }))
+      .toEqual({ x: 1020, y: 260 })
+  })
+})
+
+describe('dragBy (phase 7)', () => {
+  it('moves the window by the delta and clamps to the work area', () => {
+    const { deps, windowState } = bench()
+    const chrome = createPixiesChrome(deps, {
+      accelerator: 'CommandOrControl+Shift+P',
+      windowSize: { width: 420, height: 640 },
+      screenMargin: 12,
+      tooltip: 'Pixies',
+      miniSize: { width: 96, height: 96 },
+      miniMargin: 0,
+      initialMode: 'mini',
+    })
+    // initial mini top-right: x=1344, y=0
+    chrome.dragBy(-100, 50)
+    expect(windowState.x).toBe(1244)
+    expect(windowState.y).toBe(50)
+    chrome.dragBy(10_000, 10_000) // far past the edge: clamped
+    expect(windowState.x).toBe(1344)
+    expect(windowState.y).toBe(804)
+  })
+
+  it('emits onDragged with the new position', () => {
+    const { deps, windowState } = bench()
+    const seen: Array<{ mode: string; x: number; y: number }> = []
+    const chrome = createPixiesChrome(deps, {
+      accelerator: 'CommandOrControl+Shift+P',
+      windowSize: { width: 420, height: 640 },
+      screenMargin: 12,
+      tooltip: 'Pixies',
+      miniSize: { width: 96, height: 96 },
+      miniMargin: 0,
+      initialMode: 'mini',
+      onDragged: (position) => { seen.push({ mode: position.mode, x: position.x, y: position.y }) },
+    })
+    chrome.dragBy(-20, 10)
+    expect(seen.at(-1)).toEqual({ mode: 'mini', x: windowState.x, y: windowState.y })
+  })
+
+  it('restores a saved position on creation and keeps it per mode', () => {
+    const { deps, windowState } = bench()
+    const chrome = createPixiesChrome(deps, {
+      accelerator: 'CommandOrControl+Shift+P',
+      windowSize: { width: 420, height: 640 },
+      screenMargin: 12,
+      tooltip: 'Pixies',
+      miniSize: { width: 96, height: 96 },
+      miniMargin: 0,
+      initialMode: 'mini',
+      initialPosition: {
+        mini: { x: 200, y: 200 },
+        expanded: { x: 80, y: 80 },
+      },
+    })
+    expect(chrome.mode).toBe('mini')
+    expect(windowState.x).toBe(200)
+    expect(windowState.y).toBe(200)
+
+    chrome.setMode('expanded')
+    expect(windowState.x).toBe(80)
+    expect(windowState.y).toBe(80)
+
+    chrome.setMode('mini')
+    expect(windowState.x).toBe(200)
+    expect(windowState.y).toBe(200)
   })
 })

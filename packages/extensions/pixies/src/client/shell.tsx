@@ -22,6 +22,7 @@ import {
 } from './character.tsx'
 import { feedSessionEvent, type SessionEventLike } from './feed.ts'
 import type { PixiesStore } from './store.ts'
+import { usePixiesWindowDrag } from './window-drag.ts'
 
 /** Shell interaction copy owned by this plugin (components stay copy-free). */
 export const defaultPixiesMessages: PixiesPanelMessages = {
@@ -33,6 +34,7 @@ export const defaultPixiesMessages: PixiesPanelMessages = {
   collapse: 'Collapse',
   listening: 'Listening…',
   speechFailed: 'Voice input failed',
+  thinking: 'Thinking…',
 }
 
 /** One speech-input event forwarded by the Electron preload bridge. */
@@ -55,6 +57,12 @@ export interface PixiesShellBridge {
   readonly collapse: () => void
   readonly startSpeech: () => void
   readonly stopSpeech: () => void
+  /**
+   * Send one pointermove delta while the user drags the floating window.
+   * Window-relative: positive X moves the window right, positive Y down.
+   * The host clamps the result to the display work area before applying.
+   */
+  readonly dragBy: (deltaX: number, deltaY: number) => void
   readonly onSpeech: (listener: (event: PixiesShellSpeechEvent) => void) => () => void
   readonly onMode: (listener: (mode: PixiesShellMode) => void) => () => void
 }
@@ -69,6 +77,7 @@ export function resolvePixiesShellBridge(): PixiesShellBridge | undefined {
   const bridge = candidate as Record<string, unknown>
   if (typeof bridge.expand !== 'function' || typeof bridge.collapse !== 'function'
     || typeof bridge.startSpeech !== 'function' || typeof bridge.stopSpeech !== 'function'
+    || typeof bridge.dragBy !== 'function'
     || typeof bridge.onSpeech !== 'function' || typeof bridge.onMode !== 'function') return undefined
   return candidate as PixiesShellBridge
 }
@@ -171,6 +180,16 @@ const SHELL_OVERLAY_STYLE: CSSProperties = {
   pointerEvents: 'none',
 }
 
+/** Top "title bar" of the expanded panel: drag handle, no buttons. */
+const DRAG_BAR_STYLE: CSSProperties = {
+  width: '100%',
+  height: 18,
+  // The drag bar is a grabable strip; the icon column below keeps its own
+  // pointer-events so taps on the character/bubble are still inert.
+  cursor: 'move',
+  pointerEvents: 'auto',
+}
+
 const SHELL_MINI_STYLE: CSSProperties = {
   position: 'fixed',
   inset: 0,
@@ -242,20 +261,37 @@ function ShellPanel({ store, messages, bridge, onFinalTranscript }: {
     return () => { offMode(); offSpeech() }
   }, [bridge, onFinalTranscript, messages])
   if (mode === 'mini') {
-    return createElement('div', { style: SHELL_MINI_STYLE, 'data-pixies-shell': '', 'data-mode': 'mini' },
-      createElement('button',
-        {
-          type: 'button',
-          'data-testid': 'pixies-mini',
-          'aria-label': messages.expand ?? 'Expand',
-          style: MINI_BUTTON_STYLE,
-          onClick: () => { bridge?.expand() },
-        },
-        createElement(PixiesCharacter, { size: 80 }),
-      ),
+    // The whole mini avatar is a drag handle AND an expand-on-click target.
+    // A small horizontal pointer movement during the press starts a drag;
+    // a quick tap without movement expands. Both gestures coexist because
+    // the bridge receives pointermove deltas, and a no-op drag (zero
+    // movement) leaves the window where it was.
+    const drag = usePixiesWindowDrag(bridge)
+    return createElement('div', {
+      'data-pixies-shell': '',
+      'data-mode': 'mini',
+      ...drag.containerProps,
+      style: { ...SHELL_MINI_STYLE, ...drag.containerProps.style },
+    },
+    createElement('button',
+      {
+        type: 'button',
+        'data-testid': 'pixies-mini',
+        'aria-label': messages.expand ?? 'Expand',
+        style: MINI_BUTTON_STYLE,
+        onClick: () => { bridge?.expand() },
+      },
+      createElement(PixiesCharacter, { size: 80 }),
+    ),
     )
   }
+  const expandedDrag = usePixiesWindowDrag(bridge)
   return createElement('div', { style: SHELL_OVERLAY_STYLE, 'data-pixies-shell': '', 'data-mode': 'expanded' },
+    createElement('div', {
+      'data-testid': 'pixies-drag-bar',
+      ...expandedDrag.containerProps,
+      style: { ...DRAG_BAR_STYLE, ...expandedDrag.containerProps.style },
+    }),
     createElement(PixiesPanel, {
       state,
       messages,

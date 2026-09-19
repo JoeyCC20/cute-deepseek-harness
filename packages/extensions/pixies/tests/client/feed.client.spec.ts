@@ -31,8 +31,27 @@ describe('feedSessionEvent', () => {
 
   it('ignores non-assistant events', () => {
     const store = createPixiesStore()
-    feedSessionEvent(store, 'session-1', event('turn/start', 1, { turn: 1 }))
     feedSessionEvent(store, 'session-1', event('user/message', 2, { content: [] }))
     expect(store.getState().latest).toBeUndefined()
+  })
+
+  it('turn/start marks the session pending, turn/end clears it', () => {
+    const store = createPixiesStore()
+    feedSessionEvent(store, 'session-1', event('turn/start', 1, { turn: 1 }))
+    expect(store.getState().pendingSession).toBe('session-1')
+    feedSessionEvent(store, 'session-1', event('turn/end', 99, { turn: 1 }))
+    expect(store.getState().pendingSession).toBeUndefined()
+  })
+
+  it('the first assistant/message clears the pending marker', () => {
+    const store = createPixiesStore()
+    feedSessionEvent(store, 'session-1', event('turn/start', 1, { turn: 1 }))
+    feedSessionEvent(store, 'session-1', event('assistant/message', 3, {
+      turn: 1,
+      step: 1,
+      message: { content: [{ type: 'text', text: '你好' }] },
+    }))
+    expect(store.getState().pendingSession).toBeUndefined()
+    expect(store.getState().latest?.text).toBe('你好')
   })
 })

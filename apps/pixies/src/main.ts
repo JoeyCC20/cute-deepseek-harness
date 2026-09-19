@@ -47,6 +47,45 @@ const SCREEN_MARGIN = 12
 const MINI_MARGIN = 0
 const SHORTCUT = 'CommandOrControl+Shift+P'
 const TOOLTIP = 'Pixies'
+
+/** Persisted window placement for each mode; lives in userData. */
+interface PixiesWindowPlacement {
+  mini?: { x: number; y: number }
+  expanded?: { x: number; y: number }
+}
+
+function loadPixiesWindowPlacement(): PixiesWindowPlacement | undefined {
+  try {
+    const raw = readFileSync(join(app.getPath('userData'), 'pixies-window.json'), 'utf8')
+    const parsed = JSON.parse(raw) as unknown
+    if (typeof parsed !== 'object' || parsed === null) return undefined
+    const pick = (value: unknown): { x: number; y: number } | undefined => {
+      if (typeof value !== 'object' || value === null) return undefined
+      const coords = value as Record<string, unknown>
+      if (typeof coords.x !== 'number' || typeof coords.y !== 'number') return undefined
+      if (!Number.isFinite(coords.x) || !Number.isFinite(coords.y)) return undefined
+      return { x: coords.x, y: coords.y }
+    }
+    const out: PixiesWindowPlacement = {}
+    const mini = pick((parsed as Record<string, unknown>).mini)
+    if (mini !== undefined) out.mini = mini
+    const expanded = pick((parsed as Record<string, unknown>).expanded)
+    if (expanded !== undefined) out.expanded = expanded
+    return out
+  } catch {
+    return undefined
+  }
+}
+
+function savePixiesWindowPlacement(placement: PixiesWindowPlacement): void {
+  try {
+    writeFileSync(join(app.getPath('userData'), 'pixies-window.json'), `${JSON.stringify(placement, undefined, 2)}\n`)
+  } catch {
+    // Persisting position is best-effort: a full disk or a sandboxed userData
+    // must not take the app down.
+  }
+}
+
 /** Phase 5 smoke: the transcript the synthetic speech event carries. */
 const SMOKE_TRANSCRIPT = '哈喽'
 
@@ -310,7 +349,21 @@ async function main(): Promise<void> {
         }
       })
       pixiesWindow = window
-      return window
+      return {
+        isDestroyed: () => window.isDestroyed(),
+        isVisible: () => window.isVisible(),
+        show: () => window.show(),
+        hide: () => window.hide(),
+        focus: () => window.focus(),
+        setPosition: (x, y) => { window.setPosition(x, y) },
+        setSize: (width, height) => { window.setSize(width, height) },
+        getBounds: () => {
+          const bounds = window.getBounds()
+          return { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }
+        },
+        loadURL: url => window.loadURL(url),
+        once: (event, listener) => { window.once(event, listener) },
+      }
     },
     createTray: () => {
       const tray = new Tray(nativeImage.createFromBuffer(Buffer.from(spiderDotIcon(18, 3))))
@@ -326,6 +379,13 @@ async function main(): Promise<void> {
     unregisterShortcut: (accelerator) => { globalShortcut.unregister(accelerator) },
     workArea: () => screen.getPrimaryDisplay().workAreaSize,
   }
+  const placement = loadPixiesWindowPlacement()
+  // The chrome controller is told about prior drag positions, then owns the
+  // truth after that: every drag it observes (via `onDragged`) is written
+  // straight to userData so the next launch finds it.
+  const livePlacement: PixiesWindowPlacement = {}
+  if (placement?.mini !== undefined) livePlacement.mini = placement.mini
+  if (placement?.expanded !== undefined) livePlacement.expanded = placement.expanded
   const chrome = createPixiesChrome(deps, {
     accelerator: SHORTCUT,
     windowSize: WINDOW_SIZE,
@@ -334,6 +394,11 @@ async function main(): Promise<void> {
     miniSize: MINI_SIZE,
     miniMargin: MINI_MARGIN,
     initialMode: 'mini',
+    initialPosition: livePlacement,
+    onDragged: (dragged) => {
+      livePlacement[dragged.mode] = { x: dragged.x, y: dragged.y }
+      savePixiesWindowPlacement(livePlacement)
+    },
   })
   // Renderer-driven window modes and the speech subprocess (phase 3).
   const notifyMode = (mode: string): void => { pixiesWindow?.webContents.send('pixies:mode', mode) }
@@ -353,6 +418,15 @@ async function main(): Promise<void> {
   })
   ipcMain.handle('pixies:speech:start', () => { speech.start() })
   ipcMain.handle('pixies:speech:stop', () => { speech.stop() })
+  // Renderer drags send screen-space deltas; the controller clamps them
+  // against the current display before moving the window. The same delta
+  // is also forwarded as a single `ipcMain.on` because there is no return
+  // value to await — pointermove fires dozens of times per second.
+  ipcMain.on('pixies:drag:move', (_event, deltaX: unknown, deltaY: unknown) => {
+    if (typeof deltaX !== 'number' || typeof deltaY !== 'number') return
+    if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return
+    chrome.dragBy(deltaX, deltaY)
+  })
   await chrome.window.loadURL(`${SCHEME}://app/index.html`)
   if (smokeFile !== undefined && pixiesWindow !== undefined && host !== undefined) {
     await runPixiesSmoke(host, pixiesWindow, smokeFile, speech, speechEvents)

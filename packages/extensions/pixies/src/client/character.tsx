@@ -75,6 +75,8 @@ export interface PixiesPanelMessages {
   readonly listening?: string
   /** Bubble headline for a failed speech round (the reason is appended by the caller). */
   readonly speechFailed?: string
+  /** Bubble text shown between a user prompt and the first assistant reply. */
+  readonly thinking?: string
 }
 
 function interactionText(interaction: PixiesInteraction, messages: PixiesPanelMessages): string {
@@ -101,13 +103,16 @@ export function PixiesPanel({ state, messages, showIdleCharacter = false, speech
   showIdleCharacter?: boolean
   speechDraft?: { readonly listening: boolean; readonly partial: string; readonly error?: string }
 }): ReactElement | null {
-  const { latest, interaction } = state
+  const { latest, interaction, pendingSession } = state
   const listening = speechDraft?.listening === true
   const speechError = speechDraft?.error !== undefined && speechDraft.error !== '' ? speechDraft.error : undefined
   const draftText = listening
     ? (speechDraft?.partial !== undefined && speechDraft.partial !== '' ? speechDraft.partial : messages.listening)
     : undefined
-  if (latest === undefined && interaction === undefined && draftText === undefined && speechError === undefined) {
+  // pendingSession counts as content even with no latest reply: the bubble
+  // must render the thinking line, not the idle character.
+  if (latest === undefined && interaction === undefined && draftText === undefined && speechError === undefined
+    && pendingSession === undefined) {
     if (!showIdleCharacter) return null
     return createElement('div', { 'data-testid': 'pixies-panel', style: PANEL_STYLE },
       createElement(PixiesCharacter),
@@ -123,6 +128,12 @@ export function PixiesPanel({ state, messages, showIdleCharacter = false, speech
     return createElement('div', { 'data-testid': 'pixies-panel', style: PANEL_STYLE },
       createElement(PixiesCharacter),
       createElement(PixiesBubble, { text: draftText, mood: 'asking' }),
+    )
+  }
+  if (latest === undefined && state.pendingSession !== undefined) {
+    return createElement('div', { 'data-testid': 'pixies-panel', style: PANEL_STYLE },
+      createElement(PixiesCharacter),
+      createElement(PixiesBubble, { text: messages.thinking ?? 'Thinking…', mood: 'thinking' }),
     )
   }
   const text = latest?.text ?? (interaction !== undefined ? interactionText(interaction, messages) : '')

@@ -20,7 +20,7 @@ describe('createPixiesStore', () => {
     const store = createPixiesStore()
     const seen: unknown[] = []
     store.subscribe(state => seen.push(state))
-    expect(store.getState()).toEqual({ latest: undefined, interaction: undefined })
+    expect(store.getState()).toEqual({ latest: undefined, interaction: undefined, pendingSession: undefined })
 
     store.speak(presentation('你好'))
     expect(store.getState().latest?.text).toBe('你好')
@@ -47,11 +47,29 @@ describe('createPixiesStore', () => {
     expect(calls).toBe(1)
   })
 
-  it('clear resets both fields', () => {
+  it('clear resets every field', () => {
     const store = createPixiesStore()
     store.speak(presentation('a'))
     store.setInteraction({ kind: 'question', sessionId: 's', summary: 'q' })
+    store.beginThinking('s')
     store.clear()
-    expect(store.getState()).toEqual({ latest: undefined, interaction: undefined })
+    expect(store.getState()).toEqual({ latest: undefined, interaction: undefined, pendingSession: undefined })
+  })
+
+  it('beginThinking marks the session and endThinking clears it', () => {
+    const store = createPixiesStore()
+    store.beginThinking('s')
+    expect(store.getState().pendingSession).toBe('s')
+    store.endThinking('s')
+    expect(store.getState().pendingSession).toBeUndefined()
+  })
+
+  it('endThinking ignores stale sessions and clear overrides', () => {
+    const store = createPixiesStore()
+    store.beginThinking('live')
+    store.endThinking('stale')
+    expect(store.getState().pendingSession).toBe('live')
+    store.clear()
+    expect(store.getState().pendingSession).toBeUndefined()
   })
 })
