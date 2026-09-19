@@ -39,7 +39,7 @@ const PROFILE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', PI
 const PROJECT_NAME = '@deepseek-ai/dsh-desktop-runtime'
 const CORE_BUILD_PACKAGE = '@deepseek-ai/dsh-subprocess-local'
 const WORKSPACE_SETTINGS = 'nodeLinker: hoisted\nautoInstallPeers: false\nstrictDepBuilds: true\n'
-const HOST_RUNTIME_FILES = ['lib/index.js', 'config/desktop.cordis.patch.yml'] as const
+const HOST_RUNTIME_FILES = ['lib/index.js'] as const
 
 interface PackedPackage {
   readonly tarball: string
@@ -97,10 +97,24 @@ function selectClosure(available: ReadonlyMap<string, PackedPackage>): PackedPac
     selected.set(name, packed)
     for (const section of ['dependencies', 'peerDependencies'] as const) {
       for (const dependency of dependencyNames(packed.manifest, section)) {
-        if (available.has(dependency)) visit(dependency)
-        else if (dependency.startsWith('@deepseek-ai/')) {
+        if (available.has(dependency)) {
+          visit(dependency)
+          continue
+        }
+        // LibreOffice-kit is a runtime-loaded optional native engine for the
+        // dsh document preview; the tray shell never invokes office-to-pdf,
+        // so the engine packages are out of scope for the pixies closure
+        // and are satisfied at host install instead.
+        if (dependency === '@deepseek-ai/libreoffice-kit' || dependency.startsWith('@deepseek-ai/libreoffice-kit-')) continue
+        if (dependency.startsWith('@deepseek-ai/')) {
+          // An unpacked internal package means a first-party dep was missing
+          // from the closure (likely because release:pack only covers the
+          // families explicitly listed). That is a real packaging bug —
+          // refuse rather than silently dropping the dep.
           throw new Error(`pixies packaging: ${name} requires unpacked internal package ${dependency}`)
         }
+        // Other non-workspace npm dependencies are satisfied at install time
+        // on the host, not by pack; skip them silently.
       }
     }
     for (const dependency of dependencyNames(packed.manifest, 'optionalDependencies')) {
@@ -188,10 +202,11 @@ async function main(): Promise<void> {
   run('pnpm', ['--dir', 'apps/desktop-host', 'pack', '--pack-destination', packedDsh], REPOSITORY_ROOT)
   run('pnpm', ['run', 'release:pack', '--family', 'vendor', '--out', packedVendor], REPOSITORY_ROOT)
   run('pnpm', ['--dir', 'packages/extensions/pixies', 'pack', '--pack-destination', packedPixies], REPOSITORY_ROOT)
-  // The sandbox closure requires the landlock native entry, exactly like the
-  // desktop release packs it.
-  run('pnpm', ['--dir', 'native/landlock-run', 'run', 'build:ts'], REPOSITORY_ROOT)
-  run('pnpm', ['--dir', 'native/landlock-run/packages/entry', 'pack', '--pack-destination', packedLandlock], REPOSITORY_ROOT)
+  // The sandbox closure requires the native entry, exactly like the desktop
+  // release packs it. The workspace moved landlock-run to native/system on
+  // master; align with that path so the pixies pack follows the same closure.
+  run('pnpm', ['--dir', 'native/system', 'run', 'build:ts'], REPOSITORY_ROOT)
+  run('pnpm', ['--dir', 'native/system/packages/entry', 'pack', '--pack-destination', packedLandlock], REPOSITORY_ROOT)
 
   const closure = selectClosure(packedPackages([packedDsh, packedVendor, packedPixies, packedLandlock]))
   const dshManifest = closure.find(packed => packed.manifest.name === DSH_PACKAGE)

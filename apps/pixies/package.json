@@ -2,7 +2,7 @@
   "name": "@deepseek-ai/dsh-pixies-app",
   "productName": "Pixies",
   "description": "Pixies menu-bar tray client (Electron shell): tray entry, global shortcut, and a frameless top-right window over the dsh backend (dev-run)",
-  "version": "0.1.3-alpha.2",
+  "version": "0.1.6-alpha.2",
   "private": true,
   "type": "module",
   "main": "lib/main.js",

@@ -303,6 +303,7 @@ function fakeBridge(): {
       modeListeners.push(listener)
       return () => { remove(modeListeners, listener) }
     },
+    dragBy: () => {},
   }
   return {
     bridge,

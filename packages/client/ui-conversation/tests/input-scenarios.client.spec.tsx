@@ -147,7 +147,7 @@ async function scopedBench(register?: (inputTriggers: InputTriggerService) => vo
     SessionProvider: ({ children }) => children,
     useSession: bindSnapshotSelector(sessionStore),
     useSessions: bindSnapshotSelector(createSnapshotStore({
-      ids: [], byId: {}, current: undefined, phase: 'ready',
+      ids: [], byId: {}, phase: 'ready',
       subagentsByParent: {}, jobsBySession: {}, currentAddress: undefined,
     })),
     useSessionStatus: bindSnapshotSelector(

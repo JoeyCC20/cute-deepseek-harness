@@ -1,7 +1,7 @@
 {
   "name": "@deepseek-ai/dsh-pixies",
   "description": "Pixies menu-bar character client (host half): observes the approval/user-question waterfalls and derives speech-bubble presentations from the session log, without touching existing composition code",
-  "version": "0.1.3-alpha.2",
+  "version": "0.1.6-alpha.2",
   "publishConfig": {
     "access": "public"
   },
