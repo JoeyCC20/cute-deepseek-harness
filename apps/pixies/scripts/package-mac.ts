@@ -36,7 +36,7 @@ const BUNDLE_ROOTS = [DSH_PACKAGE, DESKTOP_HOST_PACKAGE, PIXIES_PACKAGE] as cons
 /** Mirrors apps/desktop DESKTOP_PROFILE_BUNDLES + the pixies plugin. */
 const PROFILE_BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', PIXIES_PACKAGE] as const
 /** Mirrors apps/desktop project-manager.ts seed metadata (createSeedMetadata). */
-const PROJECT_NAME = '@deepseek-ai/dsh-desktop-runtime'
+const PROJECT_NAME = '@deepseek-ai/dsh'
 const CORE_BUILD_PACKAGE = '@deepseek-ai/dsh-subprocess-local'
 const WORKSPACE_SETTINGS = 'nodeLinker: hoisted\nautoInstallPeers: false\nstrictDepBuilds: true\n'
 const HOST_RUNTIME_FILES = ['lib/index.js'] as const
@@ -281,6 +281,22 @@ async function main(): Promise<void> {
   console.log('pixies packaging: copying resources into the bundle')
   rmSync(join(resources, 'project'), { recursive: true, force: true })
   run('cp', ['-R', project, join(resources, 'project')], APP_ROOT)
+  // dsh-desktop-host unconditionally loads the Office skill plugin and the
+  // plugin's apply() statSyncs `office-skills/scripts/check_office.py`; the
+  // tray shell never invokes an office skill but must still ship the assets
+  // or the host's boot throws and the IPC `ready` event never lands.
+  // Mirrors apps/desktop/scripts/prepare-primary-runtime.ts → prepareOfficeSkillAssets:
+  // the Office plugin assets live in @deepseek-ai/dsh-skill-office/assets and
+  // desktop copies them next to runtime/primary-runtime. PIXIES collapses
+  // runtime into project, so we copy them next to the Resources root instead.
+  const stagedSkillOffice = join(project, 'node_modules', '@deepseek-ai', 'dsh-skill-office', 'assets')
+  if (!existsSync(stagedSkillOffice)) {
+    throw new Error(`pixies packaging: staged project is missing ${stagedSkillOffice}`)
+  }
+  const officeSkillsDir = join(resources, 'office-skills')
+  rmSync(officeSkillsDir, { recursive: true, force: true })
+  cpSync(stagedSkillOffice, officeSkillsDir, { recursive: true, dereference: true })
+  console.log('pixies packaging: staged office skill assets beside the project')
   const nodeDir = join(resources, 'runtime', 'node')
   mkdirSync(nodeDir, { recursive: true })
   cpSync(realpathSync(process.execPath), join(nodeDir, 'node'))

@@ -46,13 +46,36 @@ export type DesktopHostCommand = {
 
 /** Lifecycle events retained on Node IPC. */
 export type DesktopHostEvent = {
+  readonly type: 'shutdown-complete'
+} | {
   readonly type: 'ready'
-  readonly protocolVersion: typeof DESKTOP_HOST_PROTOCOL_VERSION
-  readonly dshVersion: string
+  readonly url: string
+  readonly injections?: readonly PixiesHostInjection[]
 } | {
   readonly type: 'fatal'
   readonly message: string
+} | {
+  readonly type: 'update-tasks'
+  readonly requestId: number
+  readonly active: boolean
+  readonly error?: string
 }
+
+/**
+ * Structural slice of the Host webserver's index injection table. PIXIES
+ * applies these rows directly into the served HTML instead of routing
+ * `dsh-app://app/index.html` through the Host's own webserver (which would
+ * require a carrier the Host does not implement — see phase 8 of the test
+ * validation). The shape mirrors `@deepseek-ai/dsh-host-webserver`'s
+ * `IndexInjection`; we redeclare it here so PIXIES has no desktop imports.
+ */
+export type PixiesHostInjection =
+  | { readonly kind: 'global'; readonly name: string; readonly value: unknown }
+  | { readonly kind: 'script'; readonly placement: 'head' | 'body'; readonly text: string }
+  | { readonly kind: 'script-src'; readonly placement: 'head' | 'body'; readonly src: string }
+  | { readonly kind: 'script-preload'; readonly src: string }
+  | { readonly kind: 'style'; readonly text: string }
+  | { readonly kind: 'html'; readonly placement: 'head' | 'body'; readonly html: string }
 
 /** One decoded response-pipe frame. */
 export type DesktopHostResponseFrame = {

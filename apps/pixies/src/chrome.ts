@@ -197,12 +197,22 @@ export function createPixiesChrome(deps: PixiesChromeDeps, options: PixiesChrome
   // pulls the window back inside the work area on the next tick.
   const dragBy = (deltaX: number, deltaY: number): void => {
     const bounds = window.getBounds()
+    const workArea = deps.workArea()
+    // Guard against non-finite coordinates slipping past the renderer: if the
+    // window has not yet received its first on-screen bounds (e.g. immediately
+    // after `show` on macOS) `getBounds` can return undefined fields, or the
+    // display service may report NaN sizes while it warms up. Both paths
+    // produce NaN positions that BrowserWindow.setPosition rejects at the
+    // C++ binding with `conversion failure from <undefined|NaN>`.
+    if (!Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)) return
+    if (!Number.isFinite(workArea.width) || !Number.isFinite(workArea.height)) return
     const size = { width: bounds.width, height: bounds.height }
     const next = clampPositionToWorkArea(
       { x: bounds.x + deltaX, y: bounds.y + deltaY },
       size,
-      deps.workArea(),
+      workArea,
     )
+    if (!Number.isFinite(next.x) || !Number.isFinite(next.y)) return
     window.setPosition(next.x, next.y)
     options.onDragged?.({ mode, x: next.x, y: next.y })
   }

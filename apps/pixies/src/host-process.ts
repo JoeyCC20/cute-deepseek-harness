@@ -5,7 +5,6 @@ import { once } from 'node:events'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import {
-  DESKTOP_HOST_PROTOCOL_VERSION,
   DESKTOP_PIPE_CHUNK_BYTES,
   DESKTOP_REQUEST_PIPE_FD,
   DESKTOP_RESPONSE_PIPE_FD,
@@ -17,6 +16,7 @@ import {
   type DesktopHostCommand,
   type DesktopHostEvent,
   type DesktopHostResponseFrame,
+  type PixiesHostInjection,
 } from './host-protocol.ts'
 
 interface PendingResponse {
@@ -33,10 +33,15 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
   if (typeof message !== 'object' || message === null || !('type' in message)) return false
   const candidate = message as Record<string, unknown>
   switch (candidate.type) {
+    case 'shutdown-complete':
+      return true
     case 'ready':
-      return candidate.protocolVersion === DESKTOP_HOST_PROTOCOL_VERSION && typeof candidate.dshVersion === 'string'
+      return typeof candidate.url === 'string'
     case 'fatal':
       return typeof candidate.message === 'string'
+    case 'update-tasks':
+      return Number.isSafeInteger(candidate.requestId) && typeof candidate.active === 'boolean'
+        && (candidate.error === undefined || typeof candidate.error === 'string')
     default:
       return false
   }
@@ -61,8 +66,8 @@ async function exitsWithin(exit: Promise<void>, milliseconds: number): Promise<b
 
 /** Ready facts reported by one installed dsh child. */
 export interface DesktopHostReady {
-  readonly protocolVersion: typeof DESKTOP_HOST_PROTOCOL_VERSION
-  readonly dshVersion: string
+  readonly url: string
+  readonly injections?: readonly PixiesHostInjection[] | undefined
 }
 
 /** One dsh backend running under the bundled upstream Node.js executable. */
@@ -86,7 +91,10 @@ export class DesktopHostProcess {
 
   /**
    * @param node - absolute bundled upstream Node.js executable.
-   * @param projectDir - active or staged desktop npm project.
+   * @param projectDir - active or staged desktop npm project. PIXIES uses this
+   *                    directory as both the runtime root (the host's argv[2])
+   *                    and the project directory (argv[3]): the pixies bundle
+   *                    ships only one npm-project view, no separate runtime.
    * @param inspectPort - optional loopback inspector port for workspace development.
    */
   constructor(
@@ -98,17 +106,33 @@ export class DesktopHostProcess {
   /** Start the child once and resolve only after its complete composition is active. */
   async start(): Promise<DesktopHostReady> {
     if (this.child !== undefined) return this.readyPromise
+    // The host entry lives under the project's @deepseek-ai/dsh-desktop-host.
     const entry = join(this.projectDir, 'node_modules', '@deepseek-ai', 'dsh-desktop-host', 'lib', 'index.js')
+    // argv shape matches apps/desktop/src/host-process.ts: <runtimeDir>
+    // <projectDir> <primaryRuntime> <profileResolution>. PIXIES collapses the
+    // runtime root into the project (see constructor) and falls back to the
+    // project itself for the optional primary-runtime source so the office
+    // plugin provider resolves to a real path even when pixies never invokes it.
     const child = spawn(this.node, [
+      '--expose-internals',
       ...(this.inspectPort === undefined ? [] : [`--inspect=127.0.0.1:${String(this.inspectPort)}`]),
       entry,
       this.projectDir,
-      ...(this.inspectPort === undefined ? [] : ['--allow-linked-profile']),
+      this.projectDir,
+      this.projectDir,
+      'link',
     ], {
       cwd: this.projectDir,
-      env: Object.fromEntries(Object.entries(process.env).filter(([name]) => (
-        name !== 'NODE_OPTIONS' && !/^DSH_DESKTOP_/u.test(name) && !/^(?:npm|pnpm|corepack)_/iu.test(name)
-      ))),
+      env: {
+        ...Object.fromEntries(Object.entries(process.env).filter(([name]) => (
+          name !== 'NODE_OPTIONS' && !/^DSH_DESKTOP_/u.test(name) && !/^(?:npm|pnpm|corepack)_/iu.test(name)
+        ))),
+        // The bundled binary is Electron's renderer host; force plain Node mode
+        // so the desktop-host entry runs as the IPC parent rather than spawning
+        // a Chromium renderer that swallows every `process.send` message.
+        ELECTRON_RUN_AS_NODE: '1',
+        DSH_DESKTOP_NODE_EXECUTABLE: this.node,
+      },
       stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe', 'ipc'],
     })
     const requestPipe = child.stdio[DESKTOP_REQUEST_PIPE_FD]
@@ -136,7 +160,8 @@ export class DesktopHostProcess {
     responsePipe.once('error', (error) => { this.fail(error) })
     child.on('message', (message: unknown) => {
       if (!isDesktopHostEvent(message)) {
-        this.fail(new Error('dsh desktop host sent an invalid IPC event'))
+        const seen = JSON.stringify(message)
+        this.fail(new Error(`dsh desktop host sent an invalid IPC event: ${seen.length > 200 ? `${seen.slice(0, 200)}…` : seen}`))
         child.kill('SIGTERM')
         return
       }
@@ -392,6 +417,12 @@ export class DesktopHostProcess {
         return
       case 'fatal':
         this.fail(new Error(message.message))
+        return
+      // The shared desktop Host sends shutdown/update-tasks events that the
+      // PIXIES shell never issues; ack them silently so the child is not
+      // reaped for an unrelated protocol mismatch.
+      case 'shutdown-complete':
+      case 'update-tasks':
         return
       default:
         message satisfies never

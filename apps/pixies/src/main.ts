@@ -20,7 +20,7 @@ if (injection.injected > 0) {
 import { execFile } from 'node:child_process'
 import { appendFileSync, cpSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import {
@@ -102,6 +102,63 @@ protocol.registerSchemesAsPrivileged([{
 }])
 
 /**
+ * Exchange the Host's launch URL for an authority-bound cookie so the
+ * forwarded renderer requests carry the same session as the Host's own
+ * authenticated UI. Mirrors `apps/desktop/src/web-document.ts`
+ * `authenticateWebHost` (PIXIES does not import desktop code).
+ * @param url - authenticated URL reported by the owned Host process.
+ * @returns Cookie header value (`name=value`) for that Host, ready to set.
+ */
+async function authenticatePixiesHost(url: string): Promise<string> {
+  const response = await fetch(url, { redirect: 'manual' })
+  const cookie = response.headers.get('set-cookie')
+  await response.body?.cancel()
+  if (response.status !== 303 || cookie === null) {
+    throw new Error(`pixies: host authentication failed (status ${String(response.status)})`)
+  }
+  const end = cookie.indexOf(';')
+  return end < 0 ? cookie : cookie.slice(0, end)
+}
+
+/**
+ * Forward one dsh-app://app request to the running dsh Host over loopback HTTP.
+ *
+ * The renderer cannot talk to the Host's authentication cookie directly, so we
+ * attach the cookie PIXIES retrieved once at startup (`authenticatePixiesHost`)
+ * to every forwarded request and strip the renderer-supplied Origin, Cookie,
+ * Host and Sec-Fetch-Site headers — matching `apps/desktop/src/web-document.ts`
+ * `forwardWebRequest`. The Host URL PIXIES receives at startup already carries
+ * the one-shot token query; the cookie carries the rest of the session.
+ *
+ * @param request - the incoming renderer request from the dsh-app protocol.
+ * @param hostUrl - the Host's authenticated URL reported in the `ready` event.
+ * @param hostCookie - the cookie `authenticatePixiesHost` collected.
+ * @returns the loopback Response from the Host, with hop-by-hop headers filtered.
+ */
+async function forwardToPixiesHost(request: Request, hostUrl: string, hostCookie: string): Promise<Response> {
+  const incoming = new URL(request.url)
+  const target = new URL(hostUrl)
+  // Replace only the path/query of the incoming request so the host's
+  // authenticated query string (session token) survives every proxy hop.
+  target.pathname = incoming.pathname
+  target.search = incoming.search
+  const headers = new Headers(request.headers)
+  for (const name of ['host', 'origin', 'cookie', 'sec-fetch-site']) headers.delete(name)
+  headers.set('cookie', hostCookie)
+  const method = request.method.toUpperCase()
+  const init: RequestInit = { method, headers, redirect: 'manual' }
+  if (method !== 'GET' && method !== 'HEAD' && request.body !== null) init.body = request.body
+  try {
+    const response = await fetch(target, init)
+    const filtered = new Headers(response.headers)
+    for (const name of ['set-cookie', 'content-encoding', 'content-length']) filtered.delete(name)
+    return new Response(response.body, { status: response.status, headers: filtered })
+  } catch (error) {
+    return new Response(`pixies: host fetch failed: ${error instanceof Error ? error.message : String(error)}`, { status: 502 })
+  }
+}
+
+/**
  * Deploy the packaged project bundle into userData on first launch (or when
  * the app version changes) and return the deployed directory. The packaged
  * copy under Resources is read-only and shared; userData gets a private
@@ -111,11 +168,30 @@ function packagedProject(): string {
   const stamp = `${app.getVersion()}\n`
   const target = join(app.getPath('userData'), 'project')
   const stampPath = join(target, '.pixies-release')
-  if (existsSync(stampPath) && readFileSync(stampPath, 'utf8') === stamp) return target
+  if (existsSync(stampPath) && readFileSync(stampPath, 'utf8') === stamp) {
+    deployPixiesOfficeSkills(target)
+    return target
+  }
   rmSync(target, { recursive: true, force: true })
   cpSync(join(process.resourcesPath, 'project'), target, { recursive: true })
   writeFileSync(stampPath, stamp)
+  deployPixiesOfficeSkills(target)
   return target
+}
+
+/**
+ * Copy the Office skill assets beside the deployed project directory. The
+ * desktop profile resolves them at `<dirname(config.source)>/office-skills`
+ * where `config.source` is the project directory; mirroring that layout in
+ * userData keeps the packaged build identical to what `prepare-dsh.ts`
+ * prepares for desktop.
+ */
+function deployPixiesOfficeSkills(projectDir: string): void {
+  const source = join(process.resourcesPath, 'office-skills')
+  if (!existsSync(source)) return
+  const target = join(dirname(projectDir), 'office-skills')
+  rmSync(target, { recursive: true, force: true })
+  cpSync(source, target, { recursive: true, dereference: true })
 }
 
 /** Resolve the active project: deployed bundle when packaged, dev project otherwise. */
@@ -304,14 +380,25 @@ async function main(): Promise<void> {
   // shell page markers (the env passes through to the host child).
   process.env.DSH_PIXIES_SHELL = '1'
   let host: DesktopHostProcess | undefined = new DesktopHostProcess(node, projectDir, inspectPort)
-  await host.start()
+  const hostReady = await host.start()
+  // Pull the Host's session cookie once at boot so every forwarded renderer
+  // request carries the same authority the Host's own UI does. Without this
+  // the Host responds with `dsh web authentication required; reopen the URL`.
+  const hostCookie = await authenticatePixiesHost(hostReady.url)
 
+  // PIXIES routes every dsh-app://app request to the running Host on its
+  // loopback HTTP endpoint. The Host's webserver owns the index HTML and is
+  // the one that applies the `webserver/index-inject` table (which contains both
+  // the client-modules facade and the PIXIES shell markers); if PIXIES served
+  // the index page straight from disk the renderer would boot into
+  // `__ModuleLoader__ bootstrap facade is missing`. The token query string
+  // lives on the Host's ready URL and survives every proxy hop.
   protocol.handle(SCHEME, (request) => {
     const url = new URL(request.url)
     if (url.hostname !== 'app') return Promise.resolve(new Response(null, { status: 404 }))
-    const active = host
-    if (active === undefined) return Promise.resolve(new Response('backend unavailable', { status: 503 }))
-    return active.fetch(request)
+    const ready = host
+    if (ready === undefined) return Promise.resolve(new Response('backend unavailable', { status: 503 }))
+    return forwardToPixiesHost(request, hostReady.url, hostCookie)
   })
 
   let quitting = false
@@ -423,9 +510,19 @@ async function main(): Promise<void> {
   // is also forwarded as a single `ipcMain.on` because there is no return
   // value to await — pointermove fires dozens of times per second.
   ipcMain.on('pixies:drag:move', (_event, deltaX: unknown, deltaY: unknown) => {
-    if (typeof deltaX !== 'number' || typeof deltaY !== 'number') return
-    if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return
-    chrome.dragBy(deltaX, deltaY)
+    if (typeof deltaX !== 'number' || typeof deltaY !== 'number') {
+      console.warn(`[pixies] drag ignored: non-number delta (${typeof deltaX}, ${typeof deltaY})`)
+      return
+    }
+    if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) {
+      console.warn(`[pixies] drag ignored: non-finite delta (${String(deltaX)}, ${String(deltaY)})`)
+      return
+    }
+    try {
+      chrome.dragBy(deltaX, deltaY)
+    } catch (error) {
+      console.error(`[pixies] dragBy failed at (${String(deltaX)}, ${String(deltaY)}):`, error)
+    }
   })
   await chrome.window.loadURL(`${SCHEME}://app/index.html`)
   if (smokeFile !== undefined && pixiesWindow !== undefined && host !== undefined) {
