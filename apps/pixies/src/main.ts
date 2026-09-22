@@ -37,6 +37,7 @@ import {
 import { createPixiesChrome, type PixiesChromeDeps, type PixiesWindowLike } from './chrome.ts'
 import { DesktopHostProcess } from './host-process.ts'
 import { spiderDotIcon } from './icon.ts'
+import { composePixiesDeployStamp, readPixiesBuildStamp } from './project-stamp.ts'
 import { claimPixiesSingleInstance } from './single-instance.ts'
 import { parseProbeOutput, PixiesSpeechController, type PixiesSpeechEvent } from './speech.ts'
 
@@ -160,12 +161,18 @@ async function forwardToPixiesHost(request: Request, hostUrl: string, hostCookie
 
 /**
  * Deploy the packaged project bundle into userData on first launch (or when
- * the app version changes) and return the deployed directory. The packaged
- * copy under Resources is read-only and shared; userData gets a private
- * mutable clone stamped with the deploying version.
+ * the app version or the packaged project's build fingerprint changes) and
+ * return the deployed directory. The packaged copy under Resources is
+ * read-only and shared; userData gets a private mutable clone stamped with
+ * the deploying identity. The fingerprint matters because dev builds iterate
+ * without version bumps: a version-only stamp silently kept stale client code
+ * running after the packaged fix already shipped.
  */
 function packagedProject(): string {
-  const stamp = `${app.getVersion()}\n`
+  const stamp = composePixiesDeployStamp(
+    app.getVersion(),
+    readPixiesBuildStamp(join(process.resourcesPath, 'project')),
+  )
   const target = join(app.getPath('userData'), 'project')
   const stampPath = join(target, '.pixies-release')
   if (existsSync(stampPath) && readFileSync(stampPath, 'utf8') === stamp) {
@@ -315,6 +322,17 @@ async function runPixiesSmoke(
     collapse: document.querySelector('[data-testid="pixies-collapse"]') !== null,
     mini: document.querySelector('[data-testid="pixies-mini"]') !== null,
   })`).catch(() => ({}) as Record<string, unknown>)
+  // Drag through the real renderer bridge: the pointer-delta IPC path must
+  // actually move the window (phase 9 evidence; the stale-deploy regression
+  // left both click-expand and drag dead in the field).
+  const dragBefore = window.getContentBounds()
+  await window.webContents.executeJavaScript('window.dshPixies.dragBy(30, 10)').catch(() => undefined)
+  await sleep(500)
+  const dragAfter = window.getContentBounds()
+  evidence.drag = {
+    before: { x: dragBefore.x, y: dragBefore.y },
+    after: { x: dragAfter.x, y: dragAfter.y },
+  }
   window.show()
   await sleep(1_000)
   const image = await window.webContents.capturePage()

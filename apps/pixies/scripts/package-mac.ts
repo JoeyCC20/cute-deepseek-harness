@@ -22,6 +22,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { DESKTOP_HOST_PROTOCOL_VERSION } from '../../desktop/src/host-protocol.ts'
 import { parseDesktopCorePackageSet, type DesktopCorePackageRecord } from '../../desktop/src/core-package-set.ts'
+import { buildPixiesProjectFingerprint, PIXIES_PROJECT_STAMP_FILE } from '../src/project-stamp.ts'
 import { APP_ROOT, REPOSITORY_ROOT, pixiesAppVersion } from './stage.ts'
 
 const BUILD_ROOT = join(APP_ROOT, '.pixies-build')
@@ -268,7 +269,17 @@ async function main(): Promise<void> {
   assertInstalled(project, join('node_modules', ...DSH_PACKAGE.split('/'), 'package.json'))
   const rewritten = relativizeSymlinks(project)
   console.log(`pixies packaging: rewrote ${String(rewritten)} absolute symlink(s) inside the bundled project`)
+  // Content-fingerprint the staged project so same-version re-packages still
+  // redeploy into userData: the runtime deploy stamp pairs the app version
+  // with this fingerprint (see src/project-stamp.ts).
+  const fingerprint = buildPixiesProjectFingerprint(project)
+  writeFileSync(join(project, PIXIES_PROJECT_STAMP_FILE), `${fingerprint}\n`)
+  console.log(`pixies packaging: project fingerprint ${fingerprint.slice(0, 12)}…`)
 
+  // electron-builder rmdirs the output directory itself and fails with ENOTEMPTY
+  // on leftovers a previous build or a Finder browse left behind (e.g. .DS_Store),
+  // so clear the whole dist output first: repackaging must stay deterministic.
+  rmSync(DIST_ROOT, { recursive: true, force: true })
   run('pnpm', ['exec', 'electron-builder', '--mac', '--arm64', '--dir', '--publish', 'never', '--config', 'electron-builder.config.mjs'], APP_ROOT)
 
   const appPath = findApp(DIST_ROOT)
