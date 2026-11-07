@@ -43,6 +43,27 @@ describe('feedSessionEvent', () => {
     expect(store.getState().pendingSession).toBeUndefined()
   })
 
+  it('surfaces a failed turn as a visible system message instead of going blank', () => {
+    const store = createPixiesStore()
+    feedSessionEvent(store, 'session-1', event('turn/start', 1, { turn: 1 }))
+    feedSessionEvent(store, 'session-1', event('turn/end', 2, {
+      turn: 1,
+      reason: { kind: 'error', error: { message: 'llm-deepseek: no API key' } },
+    }))
+    expect(store.getState().pendingSession).toBeUndefined()
+    expect(store.getState().messages).toMatchObject([
+      { role: 'system', text: 'llm-deepseek: no API key', mood: 'asking' },
+    ])
+  })
+
+  it('keeps a normal or aborted turn silent', () => {
+    const store = createPixiesStore()
+    feedSessionEvent(store, 'session-1', event('turn/end', 2, { turn: 1, reason: { kind: 'abort' } }))
+    feedSessionEvent(store, 'session-1', event('turn/end', 3, {}))
+    feedSessionEvent(store, 'session-1', event('turn/end', 4, null))
+    expect(store.getState().messages).toEqual([])
+  })
+
   it('the first assistant/message clears the pending marker', () => {
     const store = createPixiesStore()
     feedSessionEvent(store, 'session-1', event('turn/start', 1, { turn: 1 }))

@@ -32,22 +32,25 @@ import {
   nativeImage,
   protocol,
   screen,
+  session,
   Tray,
 } from 'electron'
-import { createPixiesChrome, type PixiesChromeDeps, type PixiesWindowLike } from './chrome.ts'
+import { createPixiesChrome, unionWorkArea, type PixiesChromeDeps, type PixiesWindowLike } from './chrome.ts'
 import { DesktopHostProcess } from './host-process.ts'
-import { spiderDotIcon } from './icon.ts'
+import { forwardToPixiesHost, pixiesBootPayload, pixiesWebSocketHeaders } from './host-proxy.ts'
+import { spiderMaskIcon } from './icon.ts'
 import { composePixiesDeployStamp, readPixiesBuildStamp } from './project-stamp.ts'
 import { claimPixiesSingleInstance } from './single-instance.ts'
 import { parseProbeOutput, PixiesSpeechController, type PixiesSpeechEvent } from './speech.ts'
 
 const SCHEME = 'dsh-app'
 const WINDOW_SIZE = { width: 420, height: 640 }
-const MINI_SIZE = { width: 96, height: 96 }
+const MINI_SIZE = { width: 112, height: 112 }
 const SCREEN_MARGIN = 12
-const MINI_MARGIN = 0
+const MINI_MARGIN = 8
 const SHORTCUT = 'CommandOrControl+Shift+P'
-const TOOLTIP = 'Pixies'
+const TOOLTIP = 'Pixies · 蜘蛛侠'
+const PLACEMENT_FILE = 'pixies-window.json'
 
 /** Persisted window placement for each mode; lives in userData. */
 interface PixiesWindowPlacement {
@@ -57,7 +60,7 @@ interface PixiesWindowPlacement {
 
 function loadPixiesWindowPlacement(): PixiesWindowPlacement | undefined {
   try {
-    const raw = readFileSync(join(app.getPath('userData'), 'pixies-window.json'), 'utf8')
+    const raw = readFileSync(join(app.getPath('userData'), PLACEMENT_FILE), 'utf8')
     const parsed = JSON.parse(raw) as unknown
     if (typeof parsed !== 'object' || parsed === null) return undefined
     const pick = (value: unknown): { x: number; y: number } | undefined => {
@@ -80,10 +83,19 @@ function loadPixiesWindowPlacement(): PixiesWindowPlacement | undefined {
 
 function savePixiesWindowPlacement(placement: PixiesWindowPlacement): void {
   try {
-    writeFileSync(join(app.getPath('userData'), 'pixies-window.json'), `${JSON.stringify(placement, undefined, 2)}\n`)
+    writeFileSync(join(app.getPath('userData'), PLACEMENT_FILE), `${JSON.stringify(placement, undefined, 2)}\n`)
   } catch {
     // Persisting position is best-effort: a full disk or a sandboxed userData
     // must not take the app down.
+  }
+}
+
+/** Forget a placement the user explicitly reset from the tray menu. */
+function clearPixiesWindowPlacement(): void {
+  try {
+    rmSync(join(app.getPath('userData'), PLACEMENT_FILE), { force: true })
+  } catch {
+    // A read-only userData directory must not take the app down.
   }
 }
 
@@ -119,44 +131,6 @@ async function authenticatePixiesHost(url: string): Promise<string> {
   }
   const end = cookie.indexOf(';')
   return end < 0 ? cookie : cookie.slice(0, end)
-}
-
-/**
- * Forward one dsh-app://app request to the running dsh Host over loopback HTTP.
- *
- * The renderer cannot talk to the Host's authentication cookie directly, so we
- * attach the cookie PIXIES retrieved once at startup (`authenticatePixiesHost`)
- * to every forwarded request and strip the renderer-supplied Origin, Cookie,
- * Host and Sec-Fetch-Site headers — matching `apps/desktop/src/web-document.ts`
- * `forwardWebRequest`. The Host URL PIXIES receives at startup already carries
- * the one-shot token query; the cookie carries the rest of the session.
- *
- * @param request - the incoming renderer request from the dsh-app protocol.
- * @param hostUrl - the Host's authenticated URL reported in the `ready` event.
- * @param hostCookie - the cookie `authenticatePixiesHost` collected.
- * @returns the loopback Response from the Host, with hop-by-hop headers filtered.
- */
-async function forwardToPixiesHost(request: Request, hostUrl: string, hostCookie: string): Promise<Response> {
-  const incoming = new URL(request.url)
-  const target = new URL(hostUrl)
-  // Replace only the path/query of the incoming request so the host's
-  // authenticated query string (session token) survives every proxy hop.
-  target.pathname = incoming.pathname
-  target.search = incoming.search
-  const headers = new Headers(request.headers)
-  for (const name of ['host', 'origin', 'cookie', 'sec-fetch-site']) headers.delete(name)
-  headers.set('cookie', hostCookie)
-  const method = request.method.toUpperCase()
-  const init: RequestInit = { method, headers, redirect: 'manual' }
-  if (method !== 'GET' && method !== 'HEAD' && request.body !== null) init.body = request.body
-  try {
-    const response = await fetch(target, init)
-    const filtered = new Headers(response.headers)
-    for (const name of ['set-cookie', 'content-encoding', 'content-length']) filtered.delete(name)
-    return new Response(response.body, { status: response.status, headers: filtered })
-  } catch (error) {
-    return new Response(`pixies: host fetch failed: ${error instanceof Error ? error.message : String(error)}`, { status: 502 })
-  }
 }
 
 /**
@@ -260,39 +234,150 @@ async function speechProbe(binary: string): Promise<unknown> {
 }
 
 /**
- * Automated shell smoke (test-validation phase2c/phase3/phase5/phase6): record the
+ * JS executed in the page: dispatch a real pointer drag sequence (down → five
+ * moves → up) on `selector`. This exercises the renderer's actual pointer
+ * handlers — the phase 9 smoke only drove `dshPixies.dragBy()` directly and
+ * therefore never saw the clientX/clientY freeze. Movement is delivered as
+ * screen-space coordinates; the client coordinates deliberately keep tracking
+ * the window (`x - window.screenX`) like a real cursor would.
+ */
+function pointerDragScript(selector: string): string {
+  return `(() => {
+    const target = document.querySelector(${JSON.stringify(selector)})
+    if (target === null) return { dispatched: false, reason: 'drag surface missing' }
+    const fire = (type, x, y) => target.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, composed: true,
+      pointerId: 7, pointerType: 'mouse', isPrimary: true,
+      button: 0, buttons: type === 'pointerup' ? 0 : 1,
+      screenX: x, screenY: y,
+      clientX: x - window.screenX, clientY: y - window.screenY,
+    }))
+    const x0 = window.screenX + 40
+    const y0 = window.screenY + 40
+    fire('pointerdown', x0, y0)
+    for (let step = 1; step <= 5; step += 1) fire('pointermove', x0 + step * 8, y0 + step * 2)
+    fire('pointerup', x0 + 40, y0 + 10)
+    return { dispatched: true }
+  })()`
+}
+
+/**
+ * Drive a real pointer drag through the page and measure whether the window
+ * actually moved. Synthetic events do not synthesize `click`, so the mini
+ * avatar's tap-to-expand stays out of the way.
+ */
+/**
+ * Electron types `executeJavaScript` as `Promise<any>`; narrow every page
+ * result at this one boundary so the smoke stages stay typed and lint-clean.
+ * @param webContents - the pixies window's page.
+ * @param script - JavaScript evaluated in the renderer.
+ * @returns the page result, narrowed by the caller.
+ */
+async function evaluateInPage<T>(webContents: Electron.WebContents, script: string): Promise<T> {
+  const value: unknown = await webContents.executeJavaScript(script)
+  return value as T
+}
+
+async function measurePointerDrag(
+  window: Electron.BrowserWindow,
+  selector: string,
+): Promise<Record<string, unknown>> {
+  const before = window.getContentBounds()
+  const dispatch: Record<string, unknown> = await evaluateInPage<Record<string, unknown>>(
+    window.webContents, pointerDragScript(selector),
+  ).catch(() => ({}))
+  await sleep(600)
+  const after = window.getContentBounds()
+  const dx = after.x - before.x
+  const dy = after.y - before.y
+  return {
+    surface: selector,
+    dispatched: dispatch.dispatched === true,
+    before: { x: before.x, y: before.y },
+    after: { x: after.x, y: after.y },
+    dx,
+    dy,
+    moved: dx !== 0 || dy !== 0,
+  }
+}
+
+/**
+ * Automated shell smoke (test-validation phase2c/phase3/phase5/phase6/phase10): record the
  * injected index.html, the mini/expanded mode round-trip with bounds evidence,
- * the speech bridge surface, a synthetic final transcript through the real
- * renderer path (phase 5: the transcript must reach a session and the reply
- * must come back as a bubble), the real speech subprocess's own events
- * (phase 6: the failure reason must be observable and must reach the bubble),
- * a probe of the speech CLI, and window screenshots next to the evidence file.
- * @param host - the started host process backing the dsh-app protocol.
+ * REAL pointer-event drags on both drag surfaces (mini avatar and expanded
+ * drag bar), the speech bridge surface, a synthetic final transcript through
+ * the real renderer path (phase 5: the transcript must reach a session and
+ * the reply must come back as a bubble — a delivery failure must surface as
+ * an errorBubble, not silence), the real speech subprocess's own events
+ * (phase 6), a probe of the speech CLI, and window screenshots next to the
+ * evidence file. Every stage is flushed to disk as it completes (with stage
+ * timings), so a hang leaves everything recorded up to the stuck point.
  * @param window - the pixies chrome window.
  * @param evidenceFile - destination JSON path; screenshots land beside it.
  * @param speech - the live speech controller (phase 6 drives the real child).
  * @param speechEvents - sink the controller records into while the smoke runs.
  */
 async function runPixiesSmoke(
-  host: DesktopHostProcess,
   window: Electron.BrowserWindow,
   evidenceFile: string,
   speech: PixiesSpeechController,
   speechEvents: PixiesSpeechEvent[],
 ): Promise<void> {
-  const evidence: Record<string, unknown> = {}
+  const evidence: Record<string, unknown> = { startedAt: new Date().toISOString() }
+  const stages: Array<{ stage: string; at: string; ms: number }> = []
+  const smokeStartedAt = Date.now()
+  let stageStartedAt = smokeStartedAt
+  const flush = async (stage: string): Promise<void> => {
+    const now = Date.now()
+    stages.push({ stage, at: new Date(now).toISOString(), ms: now - stageStartedAt })
+    stageStartedAt = now
+    evidence.elapsedMs = now - smokeStartedAt
+    evidence.stages = [...stages]
+    await writeFile(evidenceFile, `${JSON.stringify(evidence, null, 2)}\n`).catch(() => undefined)
+  }
   try {
-    const index = await host.fetch(new Request('dsh-app://app/index.html'))
-    const html = await index.text()
-    evidence.indexHasShellFlag = html.includes('__DSH_PIXIES_SHELL__')
-    evidence.indexHidesRoot = html.includes('body>*:not([data-pixies-shell]){display:none!important}')
+    await runPixiesStages(window, evidenceFile, evidence, flush, speech, speechEvents)
+    evidence.ok = true
+  } catch (error) {
+    // A hung or failed stage must still leave every earlier stage's evidence
+    // on disk plus the reason — the phase 9 field failure wrote nothing at all.
+    evidence.fatal = error instanceof Error ? `${error.message}\n${error.stack ?? ''}` : String(error)
+  }
+  await flush('done')
+}
+
+/**
+ * The smoke's stage sequence; `evidence` and `flush` come from the
+ * {@link runPixiesSmoke} wrapper so a fatal in any stage still persists the
+ * partial record before the app quits.
+ */
+async function runPixiesStages(
+  window: Electron.BrowserWindow,
+  evidenceFile: string,
+  evidence: Record<string, unknown>,
+  flush: (stage: string) => Promise<void>,
+  speech: PixiesSpeechController,
+  speechEvents: PixiesSpeechEvent[],
+): Promise<void> {
+  try {
+    // Read the injected markers out of the document the renderer actually ran.
+    // It must NOT go over the desktop-host byte pipe: in the packaged app the
+    // child accepts the request frame and never answers it (91 bytes written,
+    // 0 bytes ever read back), so a pipe fetch hangs forever and every earlier
+    // smoke died before writing its first stage. The page has already been
+    // through the host's index-inject table, so the DOM carries both markers.
+    const html = await evaluateInPage<unknown>(window.webContents, 'document.documentElement.outerHTML')
+    evidence.indexHasShellFlag = typeof html === 'string' && html.includes('__DSH_PIXIES_SHELL__')
+    evidence.indexHidesRoot = typeof html === 'string'
+      && html.includes('body>*:not([data-pixies-shell]){display:none!important}')
   } catch (error) {
     evidence.indexError = error instanceof Error ? error.message : String(error)
   }
+  await flush('index')
   // Poll until the client overlay mounts (or ~20 s).
   let page: Record<string, unknown> = {}
   for (let attempt = 0; attempt < 40; attempt += 1) {
-    page = await window.webContents.executeJavaScript(`({
+    page = await evaluateInPage<Record<string, unknown>>(window.webContents, `({
       shellFlag: window.__DSH_PIXIES_SHELL__ === true,
       overlay: document.querySelector('[data-pixies-shell]') !== null,
       character: document.querySelector('[data-testid="pixies-character"]') !== null,
@@ -302,12 +387,20 @@ async function runPixiesSmoke(
         && typeof window.dshPixies.collapse === 'function'
         && typeof window.dshPixies.startSpeech === 'function'
         && typeof window.dshPixies.stopSpeech === 'function',
-    })`).catch(() => ({}) as Record<string, unknown>)
+    })`).catch(() => ({}))
     if (page.overlay === true) break
     await sleep(500)
   }
   evidence.page = page
   evidence.miniBounds = window.getContentBounds()
+  // Phase 10: drag the MINI avatar through real pointer events. The mini
+  // container is the drag handle; synthetic events fire no click, so the
+  // tap-to-expand gesture stays out of the way.
+  const pointerDrag: Record<string, unknown> = {
+    mini: await measurePointerDrag(window, '[data-pixies-shell][data-mode="mini"]'),
+  }
+  evidence.pointerDrag = pointerDrag
+  await flush('mini-pointer-drag')
   // Expand through the real renderer bridge, then record the expanded UI.
   await window.webContents.executeJavaScript('window.dshPixies.expand()').catch(() => undefined)
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -316,12 +409,13 @@ async function runPixiesSmoke(
     await sleep(250)
   }
   evidence.expandedBounds = window.getContentBounds()
-  ;(evidence.page as Record<string, unknown>).expanded = await window.webContents.executeJavaScript(`({
+  const pageEvidence = evidence.page as Record<string, unknown>
+  pageEvidence.expanded = await evaluateInPage<Record<string, unknown>>(window.webContents, `({
     character: document.querySelector('[data-testid="pixies-character"]') !== null,
     mic: document.querySelector('[data-testid="pixies-mic"]') !== null,
     collapse: document.querySelector('[data-testid="pixies-collapse"]') !== null,
     mini: document.querySelector('[data-testid="pixies-mini"]') !== null,
-  })`).catch(() => ({}) as Record<string, unknown>)
+  })`).catch(() => ({}))
   // Drag through the real renderer bridge: the pointer-delta IPC path must
   // actually move the window (phase 9 evidence; the stale-deploy regression
   // left both click-expand and drag dead in the field).
@@ -333,28 +427,48 @@ async function runPixiesSmoke(
     before: { x: dragBefore.x, y: dragBefore.y },
     after: { x: dragAfter.x, y: dragAfter.y },
   }
+  // Phase 10: same real-pointer check for the expanded drag bar.
+  pointerDrag.expanded = await measurePointerDrag(window, '[data-testid="pixies-drag-bar"]')
+  await flush('expanded-pointer-drag')
   window.show()
   await sleep(1_000)
   const image = await window.webContents.capturePage()
   const screenshot = evidenceFile.replace(/\.json$/u, '.png')
   await writeFile(screenshot, image.toPNG())
   evidence.screenshot = screenshot
+  await flush('screenshot')
   // Phase 5: inject one final transcript through the renderer's own speech
   // channel (the real microphone is replaced, nothing else is) and wait for
-  // the assistant's reply to reach the character bubble.
+  // the assistant's reply to reach the character bubble. The thinking
+  // placeholder (data-mood="thinking") is NOT a reply — keep polling.
   const phase5: Record<string, unknown> = { transcript: SMOKE_TRANSCRIPT }
   window.webContents.send('pixies:speech', { type: 'final', text: SMOKE_TRANSCRIPT })
   for (let attempt = 0; attempt < 90; attempt += 1) {
-    const bubble = await window.webContents.executeJavaScript(
-      'document.querySelector(\'[data-testid="pixies-bubble"]\')?.textContent ?? \'\'',
-    ).catch(() => '')
-    if (typeof bubble === 'string' && bubble !== '') {
-      phase5.reply = bubble
-      break
+    const bubble = await evaluateInPage<unknown>(window.webContents, `(() => {
+        const node = document.querySelector('[data-testid="pixies-bubble"]')
+        if (node === null) return ''
+        return JSON.stringify({ text: node.textContent ?? '', mood: node.getAttribute('data-mood') ?? '' })
+      })()`).catch(() => '')
+    if (typeof bubble === 'string' && bubble.startsWith('{')) {
+      const parsed = JSON.parse(bubble) as { text: string; mood: string }
+      if (parsed.text !== '' && parsed.mood !== 'thinking') {
+        phase5.reply = parsed.text
+        break
+      }
+      if (parsed.mood === 'thinking') phase5.thinkingObserved = true
     }
     await sleep(1_000)
   }
+  // A failed delivery surfaces through the same bubble (Voice send failed:
+  // …); it must be distinguishable from a real reply instead of silently
+  // passing the "bubble is non-empty" check.
+  const bubbleText = typeof phase5.reply === 'string' ? phase5.reply : ''
+  if (/voice (send|input) failed|发送失败|语音输入失败/iu.test(bubbleText)) {
+    phase5.errorBubble = bubbleText
+    phase5.reply = ''
+  }
   evidence.phase5 = phase5
+  await flush('phase5')
   // Phase 6: drive the real speech subprocess (the same TCC attribution as the
   // mic button) and record what it reports. This is the only way to tell an
   // authorization/device failure from a delivery failure without a human at
@@ -371,6 +485,7 @@ async function runPixiesSmoke(
   ).catch(() => '')
   speech.stop()
   evidence.phase6 = phase6
+  await flush('phase6')
   // Collapse back to the peeking mini avatar.
   await window.webContents.executeJavaScript('window.dshPixies.collapse()').catch(() => undefined)
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -385,7 +500,6 @@ async function runPixiesSmoke(
   evidence.miniScreenshot = miniScreenshot
   // Read-only TCC probe of the speech CLI (no prompts).
   evidence.speechProbe = await speechProbe(speechBinary())
-  await writeFile(evidenceFile, `${JSON.stringify(evidence, null, 2)}\n`)
 }
 
 async function main(): Promise<void> {
@@ -419,8 +533,24 @@ async function main(): Promise<void> {
     return forwardToPixiesHost(request, hostReady.url, hostCookie)
   })
 
+  // Desktop's Web entry (`apps/web/src/main.ts`) only injects
+  // `__DSH_TRANSPORT__` when the preload exposes `dshDesktopBoot`. Without the
+  // Host's real stream origin the API gateway opens its event WebSocket at
+  // `ws://app/api/remote.mux` (a custom scheme cannot serve WebSockets) and
+  // retries forever: the panel renders, but no prompt ever reaches a session.
+  // The Host already applied its index injections, so ours stays empty.
+  ipcMain.handle('pixies:boot', () => pixiesBootPayload(hostReady.url))
+  ipcMain.handle('pixies:boot:failed', (_event, message: unknown) => {
+    console.error('pixies: web client boot failed:', String(message))
+  })
+
   let quitting = false
   let pixiesWindow: Electron.BrowserWindow | undefined
+  // The Remote Event WebSocket bypasses `protocol.handle`, so it needs its own
+  // Host authentication (Desktop does exactly this for its main window).
+  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['ws://127.0.0.1/*'] }, (details, callback) => {
+    callback(pixiesWebSocketHeaders(details, hostReady.url, hostCookie, pixiesWindow?.webContents.id))
+  })
   const preload = fileURLToPath(new URL('./preload-app.cjs', import.meta.url))
   const deps: PixiesChromeDeps = {
     createWindow: (): PixiesWindowLike => {
@@ -446,6 +576,10 @@ async function main(): Promise<void> {
       window.webContents.on('will-navigate', (event, url) => {
         if (new URL(url).protocol !== `${SCHEME}:`) event.preventDefault()
       })
+      // A desktop companion stays above ordinary windows (and full-screen
+      // spaces on macOS) but never steals focus on its own.
+      window.setAlwaysOnTop(true, 'floating')
+      if (process.platform === 'darwin') window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
       // Closing hides the tray window instead of destroying the app.
       window.on('close', (event) => {
         if (!quitting) {
@@ -457,9 +591,9 @@ async function main(): Promise<void> {
       return {
         isDestroyed: () => window.isDestroyed(),
         isVisible: () => window.isVisible(),
-        show: () => window.show(),
-        hide: () => window.hide(),
-        focus: () => window.focus(),
+        show: () => { window.show() },
+        hide: () => { window.hide() },
+        focus: () => { window.focus() },
         setPosition: (x, y) => { window.setPosition(x, y) },
         setSize: (width, height) => { window.setSize(width, height) },
         getBounds: () => {
@@ -471,23 +605,26 @@ async function main(): Promise<void> {
       }
     },
     createTray: () => {
-      const tray = new Tray(nativeImage.createFromBuffer(Buffer.from(spiderDotIcon(18, 3))))
+      const image = nativeImage.createFromBuffer(Buffer.from(spiderMaskIcon(18)))
+      image.setTemplateImage(true)
+      const tray = new Tray(image)
       const menu = Menu.buildFromTemplate([
-        { label: 'Show Pixies', click: () => chrome.show() },
+        { label: '显示 / 隐藏 Pixies', click: () => { chrome.toggle() } },
+        { label: '重置窗口位置', click: () => { clearPixiesWindowPlacement(); chrome.resetPosition() } },
         { type: 'separator' },
-        { label: 'Quit', click: () => { quitting = true; app.quit() } },
+        { label: '退出 Pixies', click: () => { quitting = true; app.quit() } },
       ])
       tray.on('right-click', () => { menu.popup() })
       return tray
     },
     registerShortcut: (accelerator, callback) => globalShortcut.register(accelerator, callback),
     unregisterShortcut: (accelerator) => { globalShortcut.unregister(accelerator) },
-    workArea: () => screen.getPrimaryDisplay().workAreaSize,
+    workArea: () => screen.getPrimaryDisplay().workArea,
+    dragWorkArea: () => unionWorkArea(screen.getAllDisplays().map(display => display.workArea)),
   }
   const placement = loadPixiesWindowPlacement()
-  // The chrome controller is told about prior drag positions, then owns the
-  // truth after that: every drag it observes (via `onDragged`) is written
-  // straight to userData so the next launch finds it.
+  // The chrome controller mutates this object in place, so a drag is visible
+  // to the next mode switch and a tray "reset" can forget both modes.
   const livePlacement: PixiesWindowPlacement = {}
   if (placement?.mini !== undefined) livePlacement.mini = placement.mini
   if (placement?.expanded !== undefined) livePlacement.expanded = placement.expanded
@@ -502,13 +639,26 @@ async function main(): Promise<void> {
     initialPosition: livePlacement,
     onDragged: (dragged) => {
       livePlacement[dragged.mode] = { x: dragged.x, y: dragged.y }
+    },
+    // Persist once per gesture, not once per pointermove: sync writes on every
+    // frame made long drags stutter on slower disks.
+    onDragEnd: (dragged) => {
+      livePlacement[dragged.mode] = { x: dragged.x, y: dragged.y }
       savePixiesWindowPlacement(livePlacement)
     },
   })
   // Renderer-driven window modes and the speech subprocess (phase 3).
   const notifyMode = (mode: string): void => { pixiesWindow?.webContents.send('pixies:mode', mode) }
-  ipcMain.handle('pixies:window:expand', () => { chrome.setMode('expanded'); notifyMode('expanded') })
-  ipcMain.handle('pixies:window:collapse', () => { chrome.setMode('mini'); notifyMode('mini') })
+  ipcMain.handle('pixies:window:mode', () => chrome.mode)
+  ipcMain.handle('pixies:window:expand', () => {
+    chrome.setMode('expanded')
+    notifyMode('expanded')
+    pixiesWindow?.focus()
+  })
+  ipcMain.handle('pixies:window:collapse', () => {
+    chrome.setMode('mini')
+    notifyMode('mini')
+  })
   const smokeFile = process.env.DSH_PIXIES_SMOKE_FILE
   // Phase 6 evidence sink: recorded only while the smoke runs, so a normal
   // session never accumulates speech events.
@@ -524,9 +674,10 @@ async function main(): Promise<void> {
   ipcMain.handle('pixies:speech:start', () => { speech.start() })
   ipcMain.handle('pixies:speech:stop', () => { speech.stop() })
   // Renderer drags send screen-space deltas; the controller clamps them
-  // against the current display before moving the window. The same delta
+  // against the union of all displays before moving the window. The same delta
   // is also forwarded as a single `ipcMain.on` because there is no return
   // value to await — pointermove fires dozens of times per second.
+  ipcMain.on('pixies:drag:end', () => { chrome.endDrag() })
   ipcMain.on('pixies:drag:move', (_event, deltaX: unknown, deltaY: unknown) => {
     if (typeof deltaX !== 'number' || typeof deltaY !== 'number') {
       console.warn(`[pixies] drag ignored: non-number delta (${typeof deltaX}, ${typeof deltaY})`)
@@ -543,10 +694,17 @@ async function main(): Promise<void> {
     }
   })
   await chrome.window.loadURL(`${SCHEME}://app/index.html`)
-  if (smokeFile !== undefined && pixiesWindow !== undefined && host !== undefined) {
-    await runPixiesSmoke(host, pixiesWindow, smokeFile, speech, speechEvents)
+  // The avatar is the product: show it as soon as the page is ready instead of
+  // waiting for a tray click that the user has no reason to make on launch.
+  chrome.show()
+  if (smokeFile !== undefined && pixiesWindow !== undefined) {
+    await runPixiesSmoke(pixiesWindow, smokeFile, speech, speechEvents)
     quitting = true
-    app.quit()
+    chrome.dispose()
+    speech.dispose()
+    await host.stop().catch(() => undefined)
+    host = undefined
+    app.exit(0)
     return
   }
   const openDevTools = app.isPackaged

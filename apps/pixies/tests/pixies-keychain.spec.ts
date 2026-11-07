@@ -7,8 +7,9 @@ import { describe, it } from 'vitest'
 import { createRequire } from 'node:module'
 
 const require_ = createRequire(import.meta.url)
-const { parse } = require_('../lib/pixies-keychain.cjs') as {
+const { parse, sourceCandidates } = require_('../src/pixies-keychain.cjs') as {
   parse: (text: string) => Record<string, string>
+  sourceCandidates: (cwd?: string, explicit?: string) => string[]
 }
 
 describe('pixies-keychain parser', () => {
@@ -48,5 +49,23 @@ describe('pixies-keychain parser', () => {
     const parsed = parse('FROM_ENV_FILE=from-file\nALREADY_SET=from-file\n')
     assert.equal(parsed.FROM_ENV_FILE, 'from-file')
     void dir
+  })
+})
+
+describe('pixies-keychain source discovery', () => {
+  it('puts an explicit env file first and walks up to the repository root', () => {
+    const cwd = '/repo/apps/pixies/.pixies-build/development/project'
+    const files = sourceCandidates(cwd, '/custom/.env')
+    assert.equal(files[0], '/custom/.env')
+    assert.equal(files[1], join(cwd, '.env'))
+    assert.ok(files.includes('/repo/.env'))
+    assert.ok(files.includes('/repo/apps/pixies/.env'))
+    assert.equal(new Set(files).size, files.length)
+  })
+
+  it('still consults the user-level env when no explicit file is given', () => {
+    const files = sourceCandidates('/repo/apps/pixies', undefined)
+    assert.equal(files[0], '/repo/apps/pixies/.env')
+    assert.ok(files.some(file => file.endsWith('.config/dsh/env')))
   })
 })

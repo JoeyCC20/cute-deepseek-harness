@@ -90,3 +90,50 @@ export function spiderDotIcon(size = 16, padding = 3): Uint8Array {
   }
   return pngFromRgba(size, size, pixels)
 }
+
+/** Supersampling factor for the anti-aliased mask icon. */
+const MASK_SAMPLES = 4
+
+/** Whether one 100×100 mask-space point belongs to the solid mask silhouette. */
+function maskSolid(x: number, y: number): boolean {
+  // A tapered head: narrower at the crown, wider at the jaw.
+  const radiusX = 25 + 13 * (y / 100)
+  const dx = (x - 50) / radiusX
+  const dy = (y - 52) / 44
+  if (dx * dx + dy * dy > 1) return false
+  // Two swept eyes are cut out of the silhouette. macOS template images use
+  // only the alpha channel, so transparency (not white) draws the eyes.
+  for (const side of [-1, 1] as const) {
+    const ex = (x - (50 + side * 15)) / 10.5
+    const ey = (y - 44 + side * (x - 50) * 0.22) / 13
+    if (ex * ex + ey * ey <= 1) return false
+  }
+  return true
+}
+
+/**
+ * Draw an anti-aliased Spider-Man mask as a macOS menu-bar template image.
+ * Every opaque pixel is black; the shell marks the native image as a template
+ * so macOS light/dark menu bars recolor it. Eyes stay transparent.
+ * @param size - icon edge length in pixels (16-18 px for the menu bar).
+ * @returns a PNG byte array for the tray image.
+ */
+export function spiderMaskIcon(size = 16): Uint8Array {
+  const pixels = new Uint8Array(size * size * 4)
+  const samplesSquared = MASK_SAMPLES * MASK_SAMPLES
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      let covered = 0
+      for (let sy = 0; sy < MASK_SAMPLES; sy += 1) {
+        for (let sx = 0; sx < MASK_SAMPLES; sx += 1) {
+          const px = ((x + (sx + 0.5) / MASK_SAMPLES) / size) * 100
+          const py = ((y + (sy + 0.5) / MASK_SAMPLES) / size) * 100
+          if (maskSolid(px, py)) covered += 1
+        }
+      }
+      const offset = (y * size + x) * 4
+      pixels[offset + 3] = Math.round((covered / samplesSquared) * 255)
+    }
+  }
+  return pngFromRgba(size, size, pixels)
+}

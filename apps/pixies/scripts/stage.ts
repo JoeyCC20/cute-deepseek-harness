@@ -1,7 +1,7 @@
 /** Shared project staging for the dev launcher and the macOS packager. */
 
 import { createRequire } from 'node:module'
-import { existsSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { DESKTOP_HOST_PROTOCOL_VERSION } from '../../desktop/src/host-protocol.ts'
 import type { DesktopRelease } from '../../desktop/src/release.ts'
@@ -55,6 +55,23 @@ export function stagePixiesBundle(projectDir: string): void {
     profile: { ...manifest.dsh?.profile, bundles: [...bundles, PIXIES_PACKAGE] },
   }
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+}
+
+/**
+ * The Host resolves its Office skill assets beside the project directory
+ * (`<dirname(projectDir)>/office-skills`) and fails startup when the checker
+ * script is missing. A reused development project (or a partial clean) can
+ * leave that sibling directory behind, so restore it from the workspace
+ * assets before every launch. Copy-only: no destructive cleanup here.
+ * @param developmentRoot - the directory holding `project` and its siblings.
+ */
+export function ensurePixiesOfficeSkills(developmentRoot: string): void {
+  const target = join(developmentRoot, 'office-skills')
+  if (existsSync(join(target, 'scripts', 'check_office.py'))) return
+  const source = join(REPOSITORY_ROOT, 'packages', 'skill', 'skill-office', 'assets')
+  if (!existsSync(source)) return
+  mkdirSync(target, { recursive: true })
+  cpSync(source, target, { recursive: true, dereference: true })
 }
 
 /**

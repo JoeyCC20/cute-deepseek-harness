@@ -5,37 +5,21 @@
  * @module @deepseek-ai/dsh-pixies/client/shell
  */
 
-import { createElement, useEffect, useState, type CSSProperties, type ReactElement } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type {
   ISessions,
-  SessionEventSource,
   SessionListState,
+  SessionReference,
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
-import {
-  PixiesCharacter,
-  PixiesCollapseButton,
-  PixiesMicButton,
-  PixiesPanel,
-  type PixiesPanelMessages,
-} from './character.tsx'
+import { PixiesExpandedView, PixiesMiniView, type PixiesConversationProps } from './conversation.tsx'
 import { feedSessionEvent, type SessionEventLike } from './feed.ts'
+import { defaultPixiesMessages, resolvePixiesMessages, type PixiesPanelMessages } from './locale.ts'
 import type { PixiesStore } from './store.ts'
-import { usePixiesWindowDrag } from './window-drag.ts'
 
-/** Shell interaction copy owned by this plugin (components stay copy-free). */
-export const defaultPixiesMessages: PixiesPanelMessages = {
-  approval: 'Pixies needs your approval',
-  question: 'Pixies has a question',
-  expand: 'Expand Pixies',
-  mic: 'Speak',
-  micActive: 'Listening',
-  collapse: 'Collapse',
-  listening: 'Listening…',
-  speechFailed: 'Voice input failed',
-  thinking: 'Thinking…',
-}
+export { defaultPixiesMessages, resolvePixiesMessages } from './locale.ts'
+export type { PixiesPanelMessages, PixiesResolvedMessages } from './locale.ts'
 
 /** One speech-input event forwarded by the Electron preload bridge. */
 export type PixiesShellSpeechEvent =
@@ -57,14 +41,19 @@ export interface PixiesShellBridge {
   readonly collapse: () => void
   readonly startSpeech: () => void
   readonly stopSpeech: () => void
-  /**
-   * Send one pointermove delta while the user drags the floating window.
-   * Window-relative: positive X moves the window right, positive Y down.
-   * The host clamps the result to the display work area before applying.
-   */
+  /** Send one pointermove delta while the user drags the floating window. */
   readonly dragBy: (deltaX: number, deltaY: number) => void
+  /** Query the mode the main process owns (optional on older shells). */
+  readonly getMode?: () => Promise<unknown>
+  /** Finish a drag gesture (optional on older shells). */
+  readonly endDrag?: () => void
   readonly onSpeech: (listener: (event: PixiesShellSpeechEvent) => void) => () => void
   readonly onMode: (listener: (mode: PixiesShellMode) => void) => () => void
+}
+
+/** Whether an unknown bridge payload names a real shell mode. */
+function isShellMode(value: unknown): value is PixiesShellMode {
+  return value === 'mini' || value === 'expanded'
 }
 
 /**
@@ -83,21 +72,24 @@ export function resolvePixiesShellBridge(): PixiesShellBridge | undefined {
 }
 
 /**
- * Send one speech final transcript as a queued prompt into the followed
- * session (the same selection the character follows), creating that session
- * first when the profile has none: a transcript is user input, so it must
- * never be dropped silently — a freshly installed profile has no session, and
- * without one the whole voice round-trip would end here.
+ * Send one prompt as a queued text message into the followed session (the same
+ * selection the character follows), creating that session first when the
+ * profile has none. The prompt runs under `sessions.using`, which retains the
+ * target: a binding exists only for a retained generation. Failures propagate
+ * to the caller so the bubble can say why.
  * @param sessions - the client sessions face.
- * @param text - the transcript text; blank text is dropped.
+ * @param text - the prompt text; blank text is dropped.
+ * @throws when session creation, retention, or the prompt RPC fails.
  */
 export async function promptPixiesSession(sessions: ISessions, text: string): Promise<void> {
   if (text.trim() === '') return
   const selected = pickPixiesSessionId(sessions.list.getSnapshot())
-  const target = selected !== undefined && sessions.binding(selected) !== undefined
-    ? selected
-    : await sessions.create()
-  void sessions.binding(target)?.session.prompt([{ type: 'text', text }], 'queue')
+  const target = selected !== undefined ? selected : await sessions.create()
+  await sessions.using(target, { source: 'pixiesShell' }, async (reference) => {
+    await reference.ready
+    const result = await reference.binding.session.prompt([{ type: 'text', text }], 'queue')
+    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+  })
 }
 
 /**
@@ -119,41 +111,56 @@ export interface PixiesSessionFollow {
 
 /**
  * Follow the target session's durable event window and feed every newly
- * appended `assistant/message` into the store. The watermark seeds at bind
- * time, so history is never replayed — only live output reaches the
- * character. Rebinds when the followed session changes.
+ * appended `assistant/message` into the store. The follow retains the followed
+ * session for its own lifetime (`pixiesShell` source), rebinds when the
+ * followed session changes, and seeds its watermark after the initial history
+ * open so only live output reaches the character.
  * @param sessions - the client sessions face.
  * @param store - the Pixies store to publish into.
  * @returns a disposable follow handle.
  */
 export function followPixiesSession(sessions: ISessions, store: PixiesStore): PixiesSessionFollow {
   let disposeEvents: (() => void) | undefined
+  let held: SessionReference | undefined
   let followedSessionId: SessionId | undefined
   let highWaterSeq = -1
+  let generation = 0
+  let disposed = false
+
+  const releaseEvents = (): void => {
+    disposeEvents?.()
+    disposeEvents = undefined
+  }
 
   const rebind = (state: SessionListState): void => {
     const target = pickPixiesSessionId(state)
     if (target === undefined || target === followedSessionId) return
-    const binding = sessions.binding(target)
-    if (binding === undefined) return
-    disposeEvents?.()
+    const ticket = ++generation
+    releaseEvents()
     followedSessionId = target
     highWaterSeq = -1
-    subscribeEvents(target, binding.eventSource)
-  }
-
-  const subscribeEvents = (sessionId: SessionId, source: SessionEventSource): void => {
-    for (const entry of source.getSnapshot().entries) {
-      if (entry.type === 'event' && entry.event.seq > highWaterSeq) highWaterSeq = entry.event.seq
-    }
-    disposeEvents = source.subscribe(() => {
+    held?.release()
+    const reference = sessions.retain(target, { source: 'pixiesShell' })
+    held = reference
+    void reference.ready.then((binding) => {
+      // A rebind or dispose may have superseded this reference meanwhile.
+      if (disposed || ticket !== generation) return
+      const source = binding.eventSource
       for (const entry of source.getSnapshot().entries) {
-        if (entry.type !== 'event') continue
-        const event: SessionEventLike = entry.event
-        if (event.seq <= highWaterSeq) continue
-        highWaterSeq = event.seq
-        feedSessionEvent(store, sessionId, event)
+        if (entry.type === 'event' && entry.event.seq > highWaterSeq) highWaterSeq = entry.event.seq
       }
+      disposeEvents = source.subscribe(() => {
+        for (const entry of source.getSnapshot().entries) {
+          if (entry.type !== 'event') continue
+          const event: SessionEventLike = entry.event
+          if (event.seq <= highWaterSeq) continue
+          highWaterSeq = event.seq
+          feedSessionEvent(store, binding.sessionId, event)
+        }
+      })
+    }).catch(() => {
+      // The open attempt failed (session vanished, transport dropped): stay
+      // detached; the next list mutation retries through rebind.
     })
   }
 
@@ -161,76 +168,61 @@ export function followPixiesSession(sessions: ISessions, store: PixiesStore): Pi
   rebind(sessions.list.getSnapshot())
   return {
     dispose: () => {
+      disposed = true
+      generation += 1
       unsubscribeList()
-      disposeEvents?.()
-      disposeEvents = undefined
+      releaseEvents()
+      held?.release()
+      held = undefined
       followedSessionId = undefined
     },
   }
 }
 
-const SHELL_OVERLAY_STYLE: CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'center',
-  justifyContent: 'flex-end',
-  padding: 16,
-  pointerEvents: 'none',
+/** Props owned by the shell mount; the conversation views receive the rest. */
+interface ShellPanelProps {
+  readonly store: PixiesStore
+  readonly messages: PixiesPanelMessages
+  readonly bridge: PixiesShellBridge | undefined
+  readonly onSendText: ((text: string) => void | Promise<void>) | undefined
 }
 
-/** Top "title bar" of the expanded panel: drag handle, no buttons. */
-const DRAG_BAR_STYLE: CSSProperties = {
-  width: '100%',
-  height: 18,
-  // The drag bar is a grabable strip; the icon column below keeps its own
-  // pointer-events so taps on the character/bubble are still inert.
-  cursor: 'move',
-  pointerEvents: 'auto',
-}
-
-const SHELL_MINI_STYLE: CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  pointerEvents: 'none',
-}
-
-const MINI_BUTTON_STYLE: CSSProperties = {
-  background: 'transparent',
-  border: 'none',
-  padding: 0,
-  cursor: 'pointer',
-  pointerEvents: 'auto',
-  borderRadius: '50%',
-  lineHeight: 0,
-}
-
-const CONTROLS_STYLE: CSSProperties = {
-  display: 'flex',
-  gap: 12,
-  marginTop: 4,
-  pointerEvents: 'auto',
-}
-
-function ShellPanel({ store, messages, bridge, onFinalTranscript }: {
-  store: PixiesStore
-  messages: PixiesPanelMessages
-  bridge: PixiesShellBridge | undefined
-  onFinalTranscript: ((text: string) => void) | undefined
-}): ReactElement {
+function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): ReactElement {
   const [state, setState] = useState(store.getState)
   const [mode, setMode] = useState<PixiesShellMode>(bridge === undefined ? 'expanded' : 'mini')
   const [listening, setListening] = useState(false)
   const [partial, setPartial] = useState('')
   const [speechError, setSpeechError] = useState('')
+  const [draft, setDraft] = useState('')
+  const copy = useMemo(() => resolvePixiesMessages(messages), [messages])
   useEffect(() => store.subscribe(setState), [store])
+
+  // The main process owns the real geometry. Reconcile on mount so a tray
+  // shortcut or a restored expanded session cannot leave the renderer showing
+  // the wrong surface.
+  useEffect(() => {
+    if (bridge?.getMode === undefined) return
+    let alive = true
+    void bridge.getMode().then((value) => {
+      if (alive && isShellMode(value)) setMode(value)
+    }).catch(() => undefined)
+    return () => { alive = false }
+  }, [bridge])
+
+  const sendText = useCallback((text: string): void => {
+    const trimmed = text.trim()
+    if (trimmed === '') return
+    store.appendMessage({ role: 'user', text: trimmed })
+    void Promise.resolve(onSendText?.(trimmed)).catch((error: unknown) => {
+      setSpeechError(`${copy.promptFailed}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }, [onSendText, store, copy])
+
   useEffect(() => {
     if (bridge === undefined) return
-    const offMode = bridge.onMode(setMode)
+    const offMode = bridge.onMode((value) => {
+      if (isShellMode(value)) setMode(value)
+    })
     const offSpeech = bridge.onSpeech((event) => {
       if (event.type === 'partial') {
         setListening(true)
@@ -250,99 +242,72 @@ function ShellPanel({ store, messages, bridge, onFinalTranscript }: {
       bridge.stopSpeech()
       if (event.type === 'final' && event.text !== '') {
         setSpeechError('')
-        onFinalTranscript?.(event.text)
+        sendText(event.text)
       } else if (event.type === 'error') {
-        // A failed round is the only feedback the mic can give: the speech CLI
-        // reports why (missing authorization, no input device, engine failure),
-        // so it must reach the bubble instead of being dropped here.
-        setSpeechError(`${messages.speechFailed ?? 'Voice input failed'}: ${event.message}`)
+        setSpeechError(`${copy.speechFailed}: ${event.message}`)
       }
     })
     return () => { offMode(); offSpeech() }
-  }, [bridge, onFinalTranscript, messages])
-  if (mode === 'mini') {
-    // The whole mini avatar is a drag handle AND an expand-on-click target.
-    // A small horizontal pointer movement during the press starts a drag;
-    // a quick tap without movement expands. Both gestures coexist because
-    // the bridge receives pointermove deltas, and a no-op drag (zero
-    // movement) leaves the window where it was.
-    const drag = usePixiesWindowDrag(bridge)
-    return createElement('div', {
-      'data-pixies-shell': '',
-      'data-mode': 'mini',
-      ...drag.containerProps,
-      style: { ...SHELL_MINI_STYLE, ...drag.containerProps.style },
-    },
-    createElement('button',
-      {
-        type: 'button',
-        'data-testid': 'pixies-mini',
-        'aria-label': messages.expand ?? 'Expand',
-        style: MINI_BUTTON_STYLE,
-        onClick: () => { bridge?.expand() },
-      },
-      createElement(PixiesCharacter, { size: 80 }),
-    ),
-    )
+  }, [bridge, sendText, copy])
+
+  const onMicToggle = useCallback((): void => {
+    if (listening) {
+      // Stopping produces no further event, but the already-recognized draft
+      // is still the user's input: send it instead of dropping it.
+      const recognized = partial
+      bridge?.stopSpeech()
+      setListening(false)
+      setPartial('')
+      if (recognized.trim() !== '') sendText(recognized)
+      return
+    }
+    // Feedback starts with the click: while the macOS authorization prompt is
+    // pending the speech CLI emits nothing at all.
+    setListening(true)
+    setPartial('')
+    setSpeechError('')
+    bridge?.startSpeech()
+  }, [listening, partial, bridge, sendText])
+
+  const onSend = useCallback((text: string): void => {
+    if (text.trim() === '') return
+    sendText(text)
+    setDraft('')
+  }, [sendText])
+  const onExpand = useCallback((): void => { bridge?.expand() }, [bridge])
+  const onCollapse = useCallback((): void => { bridge?.collapse() }, [bridge])
+
+  const props: PixiesConversationProps = {
+    copy,
+    state,
+    bridge,
+    listening,
+    partial,
+    error: speechError,
+    draft,
+    onDraftChange: setDraft,
+    onSend,
+    onExpand,
+    onCollapse,
+    onMicToggle,
   }
-  const expandedDrag = usePixiesWindowDrag(bridge)
-  return createElement('div', { style: SHELL_OVERLAY_STYLE, 'data-pixies-shell': '', 'data-mode': 'expanded' },
-    createElement('div', {
-      'data-testid': 'pixies-drag-bar',
-      ...expandedDrag.containerProps,
-      style: { ...DRAG_BAR_STYLE, ...expandedDrag.containerProps.style },
-    }),
-    createElement(PixiesPanel, {
-      state,
-      messages,
-      showIdleCharacter: true,
-      speechDraft: { listening, partial, error: speechError },
-    }),
-    createElement('div', { style: CONTROLS_STYLE },
-      createElement(PixiesMicButton, {
-        active: listening,
-        label: listening ? (messages.micActive ?? 'Listening') : (messages.mic ?? 'Speak'),
-        onClick: () => {
-          if (listening) {
-            // Stopping produces no further event, but the already-recognized
-            // draft is still the user's input: send it instead of dropping it.
-            // (Tapping the mic again means "I'm done" — without this the
-            // transcript shown mid-round is silently lost.)
-            const recognized = partial
-            bridge?.stopSpeech()
-            setListening(false)
-            setPartial('')
-            if (recognized.trim() !== '') onFinalTranscript?.(recognized)
-            return
-          }
-          // Feedback starts with the click, not with the first event: while the
-          // macOS authorization prompt is pending the CLI emits nothing at all,
-          // and a click that shows nothing is indistinguishable from a dead app.
-          setListening(true)
-          setPartial('')
-          setSpeechError('')
-          bridge?.startSpeech()
-        },
-      }),
-      createElement(PixiesCollapseButton, {
-        label: messages.collapse ?? 'Collapse',
-        onClick: () => { bridge?.collapse() },
-      }),
-    ),
-  )
+  return mode === 'mini'
+    ? createElement(PixiesMiniView, props)
+    : createElement(PixiesExpandedView, props)
 }
 
 /**
  * Mount the character overlay into a full-window container, keep it live from
  * the store, and honor the optional Electron bridge: with a bridge the window
- * starts as the mini peek avatar (click = expand) and the mic routes speech
- * input (final transcript → `onFinalTranscript`); without one the panel
- * renders expanded and static (plain web pages).
+ * starts as the mini peek avatar (click = expand) and both text and speech
+ * input queue prompts through `onFinalTranscript`; without one the panel
+ * renders expanded on a plain web page.
  * @param container - the overlay mount point (owned by this function).
  * @param store - the Pixies store to render from.
- * @param messages - shell interaction copy.
+ * @param messages - shell interaction copy (locale-owned).
  * @param bridge - the preload bridge; defaults to a global-scope lookup.
- * @param onFinalTranscript - callback for each final speech transcript.
+ * @param onFinalTranscript - callback for each submitted prompt; a returned
+ *   Promise's rejection (send failure) surfaces in the status bubble.
  * @returns a disposer that unmounts the React root.
  */
 export function mountPixiesShell(
@@ -350,9 +315,9 @@ export function mountPixiesShell(
   store: PixiesStore,
   messages: PixiesPanelMessages = defaultPixiesMessages,
   bridge: PixiesShellBridge | undefined = resolvePixiesShellBridge(),
-  onFinalTranscript?: (text: string) => void,
+  onFinalTranscript?: (text: string) => void | Promise<void>,
 ): () => void {
   const root: Root = createRoot(container)
-  root.render(createElement(ShellPanel, { store, messages, bridge, onFinalTranscript }))
+  root.render(createElement(ShellPanel, { store, messages, bridge, onSendText: onFinalTranscript }))
   return () => { root.unmount() }
 }

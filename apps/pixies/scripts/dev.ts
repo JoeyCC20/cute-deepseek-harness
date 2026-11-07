@@ -1,11 +1,12 @@
 /** Build and launch the unpackaged Pixies tray shell against the current workspace. */
 
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { ensureElectronSpeechPermission } from './electron-speech-permission.ts'
-import { APP_ROOT, preparePixiesProject, REPOSITORY_ROOT } from './stage.ts'
+import { APP_ROOT, ensurePixiesOfficeSkills, preparePixiesProject, REPOSITORY_ROOT } from './stage.ts'
 
 const BUILD_ROOT = join(APP_ROOT, '.pixies-build')
 const DEVELOPMENT_ROOT = join(BUILD_ROOT, 'development')
@@ -49,13 +50,19 @@ async function launchElectron(projectDir: string): Promise<void> {
   const hostPort = debugPort('DSH_DESKTOP_HOST_INSPECT_PORT', 9240)
   const home = resolve(process.env.DSH_HOME ?? join(DEVELOPMENT_ROOT, 'home'))
   const userData = join(DEVELOPMENT_ROOT, 'electron-user-data')
+  const envFile = join(REPOSITORY_ROOT, '.env')
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
+    // A Finder launch has no shell environment; give the packaged-entry
+    // credential injector the repository .env explicitly in development.
+    ...(existsSync(envFile) ? { DSH_PIXIES_ENV_FILE: envFile } : {}),
     DSH_HOME: home,
     DSH_DESKTOP_DEV_PROJECT_DIR: projectDir,
     DSH_DESKTOP_HOST_INSPECT_PORT: String(hostPort),
     DSH_DESKTOP_NODE_BINARY: process.execPath,
-    DSH_PIXIES_OPEN_DEVTOOLS: process.env.DSH_PIXIES_OPEN_DEVTOOLS ?? '1',
+    // DevTools used to open on every launch and covered the avatar. Opt in
+    // explicitly with DSH_PIXIES_OPEN_DEVTOOLS=1 when debugging the renderer.
+    DSH_PIXIES_OPEN_DEVTOOLS: process.env.DSH_PIXIES_OPEN_DEVTOOLS ?? '0',
     ELECTRON_ENABLE_LOGGING: process.env.ELECTRON_ENABLE_LOGGING ?? '1',
   }
   console.log(`pixies development: DSH_HOME=${home}`)
@@ -68,13 +75,29 @@ async function launchElectron(projectDir: string): Promise<void> {
   ], APP_ROOT, environment)
 }
 
+/** The staged bundle entry that proves an existing project is still usable. */
+function projectReady(projectDir: string): boolean {
+  return existsSync(join(projectDir, 'package.json'))
+    && existsSync(join(projectDir, 'node_modules', '@deepseek-ai', 'dsh-pixies', 'lib', 'client.js'))
+}
+
 async function main(): Promise<void> {
   const { values } = parseArgs({ options: { 'skip-build': { type: 'boolean', default: false } } })
+  const projectDir = join(DEVELOPMENT_ROOT, 'project')
   if (!values['skip-build']) {
     await runPackageScript('build', REPOSITORY_ROOT)
     await runPackageScript('build', APP_ROOT)
   }
-  const projectDir = preparePixiesProject(join(DEVELOPMENT_ROOT, 'project'))
+  // `start` means "launch what is already built". Re-staging the disposable
+  // project deletes thousands of files on every launch and is only needed
+  // after a real `dev` build; DSH_PIXIES_REUSE_PROJECT opts a dev run into it.
+  const reuse = values['skip-build'] === true || process.env.DSH_PIXIES_REUSE_PROJECT === '1'
+  if (reuse && projectReady(projectDir)) {
+    console.log(`pixies development: reusing prepared project ${projectDir}`)
+  } else {
+    preparePixiesProject(projectDir)
+  }
+  ensurePixiesOfficeSkills(DEVELOPMENT_ROOT)
   await launchElectron(projectDir)
 }
 

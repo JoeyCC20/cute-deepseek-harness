@@ -24,6 +24,23 @@ export interface AssistantMessageEventData {
 }
 
 /**
+ * Read a failed turn's reason from the wire payload. A turn that ends with an
+ * error (no API key, provider failure, transport error) produces no
+ * assistant/message, so without this the conversation would just go blank.
+ * @param event - a turn/end event.
+ * @returns the failure message, or undefined for a normal/aborted turn.
+ */
+function turnFailure(event: SessionEventLike): string | undefined {
+  const data: unknown = event.data
+  if (typeof data !== 'object' || data === null) return undefined
+  const reason: unknown = Reflect.get(data, 'reason')
+  if (typeof reason !== 'object' || reason === null || Reflect.get(reason, 'kind') !== 'error') return undefined
+  const error: unknown = Reflect.get(reason, 'error')
+  const message: unknown = typeof error === 'object' && error !== null ? Reflect.get(error, 'message') : undefined
+  return typeof message === 'string' && message !== '' ? message : undefined
+}
+
+/**
  * Feed one session event into the store: assistant/message becomes the
  * character's speech; turn/start begins a thinking round, turn/end (or a
  * follow-up assistant/message) ends it. Thinking is the gap between the user
@@ -40,6 +57,8 @@ export function feedSessionEvent(store: PixiesStore, sessionId: string, event: S
   }
   if (event.type === 'turn/end') {
     store.endThinking(sessionId)
+    const failure = turnFailure(event)
+    if (failure !== undefined) store.appendMessage({ role: 'system', text: failure, mood: 'asking' })
     return
   }
   if (event.type !== 'assistant/message') return

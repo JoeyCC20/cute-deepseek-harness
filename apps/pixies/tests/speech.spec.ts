@@ -27,12 +27,12 @@ function fakeChild(): {
   const child = {
     stdout,
     stdin: { end: (): void => { state.ended = true } },
-    kill: (signal: NodeJS.Signals): void => { state.signals.push(String(signal)) },
+    kill: (signal: NodeJS.Signals): void => { state.signals.push(signal) },
     once: (event: string, listener: (...args: never[]) => void): ChildProcess => {
       if (event === 'exit') exitListeners.push(() => { listener(...[] as never[]) })
-      return child as unknown as ChildProcess
+      return child
     },
-    on: (): ChildProcess => child as unknown as ChildProcess,
+    on: (): ChildProcess => child,
   } as unknown as ChildProcess
   return {
     child,

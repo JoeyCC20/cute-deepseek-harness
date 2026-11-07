@@ -4,7 +4,7 @@
  */
 import { inflateSync } from 'node:zlib'
 import { describe, expect, it } from 'vitest'
-import { pngFromRgba, spiderDotIcon } from '../src/icon.ts'
+import { pngFromRgba, spiderDotIcon, spiderMaskIcon } from '../src/icon.ts'
 
 const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
 
@@ -73,5 +73,26 @@ describe('spiderDotIcon', () => {
     expect(pixel(pixels, size, 8, 8)).toEqual([220, 30, 45, 255])
     expect(pixel(pixels, size, 0, 0)).toEqual([0, 0, 0, 0])
     expect(pixel(pixels, size, 15, 15)).toEqual([0, 0, 0, 0])
+  })
+})
+
+describe('spiderMaskIcon', () => {
+  it('draws a black template silhouette with cut-out eyes and transparent corners', () => {
+    const size = 18
+    const pixels = readPixels(spiderMaskIcon(size), size, size)
+    const center = pixel(pixels, size, 9, 9)
+    expect(center[3]).toBeGreaterThan(200)
+    expect(center.slice(0, 3)).toEqual([0, 0, 0])
+    expect(pixel(pixels, size, 0, 0)).toEqual([0, 0, 0, 0])
+    expect(pixel(pixels, size, 17, 17)).toEqual([0, 0, 0, 0])
+    // The left eye is punched out of the mask so macOS renders it as a gap.
+    expect(pixel(pixels, size, 6, 7)[3]).toBeLessThan(100)
+  })
+
+  it('anti-aliases the silhouette edge', () => {
+    const size = 18
+    const pixels = readPixels(spiderMaskIcon(size), size, size)
+    const alphas = Array.from({ length: size * size }, (_, index) => pixels[index * 4 + 3] ?? 0)
+    expect(alphas.some(alpha => alpha > 0 && alpha < 255)).toBe(true)
   })
 })

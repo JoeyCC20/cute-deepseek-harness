@@ -4,7 +4,7 @@
  * injected fakes, no Electron display required.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { clampPositionToWorkArea, createPixiesChrome, topRightPosition } from '../src/chrome.ts'
+import { clampPositionToWorkArea, createPixiesChrome, topRightPosition, unionWorkArea } from '../src/chrome.ts'
 import type { PixiesChromeDeps, PixiesTrayLike, PixiesWindowLike } from '../src/chrome.ts'
 
 interface WindowState {
@@ -67,7 +67,7 @@ function bench(): {
   const deps: PixiesChromeDeps = {
     createWindow: vi.fn(() => window),
     createTray: vi.fn(() => tray),
-    registerShortcut: vi.fn((accelerator, callback) => {
+    registerShortcut: vi.fn((accelerator: string, callback: () => void) => {
       shortcutState.registered = true
       shortcutState.accelerator = accelerator
       shortcutState.callback = callback
@@ -177,21 +177,23 @@ describe('mini/expanded modes (phase 3)', () => {
     expect(windowState.x).toBe(1344)
     expect(windowState.y).toBe(0)
 
+    // A mode change grows/shrinks around the avatar the user placed, instead
+    // of teleporting back to the default corner.
     chrome.setMode('expanded')
     expect(chrome.mode).toBe('expanded')
     expect(windowState.width).toBe(420)
     expect(windowState.height).toBe(640)
-    expect(windowState.x).toBe(1008)
-    expect(windowState.y).toBe(12)
+    expect(windowState.x).toBe(1020)
+    expect(windowState.y).toBe(0)
 
     chrome.setMode('expanded') // same mode: geometry untouched
-    expect(windowState.x).toBe(1008)
+    expect(windowState.x).toBe(1020)
 
     chrome.setMode('mini')
     expect(chrome.mode).toBe('mini')
     expect(windowState.width).toBe(96)
     expect(windowState.height).toBe(96)
-    expect(windowState.x).toBe(1344)
+    expect(windowState.x).toBe(1182)
     expect(windowState.y).toBe(0)
   })
 
@@ -254,6 +256,27 @@ describe('dragBy (phase 7)', () => {
     expect(windowState.y).toBe(804)
   })
 
+  it('rounds fractional drag deltas to integers before setPosition (phase10 regression)', () => {
+    const { deps, windowState } = bench()
+    const chrome = createPixiesChrome(deps, {
+      accelerator: 'CommandOrControl+Shift+P',
+      windowSize: { width: 420, height: 640 },
+      screenMargin: 12,
+      tooltip: 'Pixies',
+      miniSize: { width: 96, height: 96 },
+      miniMargin: 0,
+      initialMode: 'mini',
+    })
+    // Retina pointer deltas arrive fractional (e.g. -0.109375); Electron's
+    // setPosition accepts only integers and throws "conversion failure" on
+    // the fractional position, freezing the drag. dragBy must round.
+    chrome.dragBy(-0.109375, 0.44140625)
+    expect(Number.isInteger(windowState.x)).toBe(true)
+    expect(Number.isInteger(windowState.y)).toBe(true)
+    expect(windowState.x).toBe(1344) // Math.round(1344 - 0.109375)
+    expect(windowState.y).toBe(0) // Math.round(0 + 0.44140625)
+  })
+
   it('emits onDragged with the new position', () => {
     const { deps, windowState } = bench()
     const seen: Array<{ mode: string; x: number; y: number }> = []
@@ -297,5 +320,92 @@ describe('dragBy (phase 7)', () => {
     chrome.setMode('mini')
     expect(windowState.x).toBe(200)
     expect(windowState.y).toBe(200)
+  })
+})
+
+describe('multi-display geometry', () => {
+  it('honors the work-area origin when placing the window', () => {
+    expect(topRightPosition({ width: 96, height: 96 }, { x: -1440, y: 25, width: 1440, height: 875 }, 8))
+      .toEqual({ x: -104, y: 33 })
+  })
+
+  it('keeps negative coordinates on a display left of the primary', () => {
+    expect(clampPositionToWorkArea(
+      { x: -900, y: 120 }, { width: 96, height: 96 }, { x: -1440, y: 0, width: 2880, height: 900 },
+    )).toEqual({ x: -900, y: 120 })
+  })
+
+  it('unions every display into one draggable bounding box', () => {
+    expect(unionWorkArea([
+      { x: 0, y: 25, width: 1440, height: 875 },
+      { x: -1200, y: 0, width: 1200, height: 800 },
+    ])).toEqual({ x: -1200, y: 0, width: 2640, height: 900 })
+    expect(unionWorkArea([])).toEqual({ x: 0, y: 0, width: 0, height: 0 })
+  })
+
+  it('clamps drags against the combined displays, not just the primary', () => {
+    const base = bench()
+    const deps: PixiesChromeDeps = {
+      ...base.deps,
+      dragWorkArea: () => ({ x: -1440, y: 0, width: 2880, height: 900 }),
+    }
+    const chrome = createPixiesChrome(deps, {
+      accelerator: 'CommandOrControl+Shift+P',
+      windowSize: { width: 420, height: 640 },
+      screenMargin: 12,
+      tooltip: 'Pixies',
+      miniSize: { width: 96, height: 96 },
+      miniMargin: 0,
+      initialMode: 'mini',
+    })
+    chrome.dragBy(-5000, 100)
+    expect(base.windowState.x).toBe(-1440)
+    expect(base.windowState.y).toBe(100)
+  })
+
+  it('reports the final position once at the end of a drag', () => {
+    const base = bench()
+    const dragged: number[] = []
+    const ended: Array<{ mode: string; x: number; y: number }> = []
+    const chrome = createPixiesChrome(base.deps, {
+      accelerator: 'CommandOrControl+Shift+P',
+      windowSize: { width: 420, height: 640 },
+      screenMargin: 12,
+      tooltip: 'Pixies',
+      miniSize: { width: 96, height: 96 },
+      miniMargin: 0,
+      initialMode: 'mini',
+      onDragged: () => { dragged.push(1) },
+      onDragEnd: (position) => { ended.push({ mode: position.mode, x: position.x, y: position.y }) },
+    })
+    chrome.dragBy(-20, 10)
+    chrome.dragBy(-20, 10)
+    expect(dragged).toHaveLength(2)
+    expect(ended).toEqual([])
+    chrome.endDrag()
+    expect(ended).toEqual([{ mode: 'mini', x: base.windowState.x, y: base.windowState.y }])
+  })
+
+  it('resetPosition forgets saved placement and returns to the default corner', () => {
+    const base = bench()
+    const placement: { mini?: { x: number; y: number }; expanded?: { x: number; y: number } } = {
+      mini: { x: 200, y: 200 },
+      expanded: { x: 80, y: 80 },
+    }
+    const chrome = createPixiesChrome(base.deps, {
+      accelerator: 'CommandOrControl+Shift+P',
+      windowSize: { width: 420, height: 640 },
+      screenMargin: 12,
+      tooltip: 'Pixies',
+      miniSize: { width: 96, height: 96 },
+      miniMargin: 0,
+      initialMode: 'mini',
+      initialPosition: placement,
+    })
+    expect(base.windowState.x).toBe(200)
+    chrome.resetPosition()
+    expect(placement).toEqual({})
+    expect(base.windowState.x).toBe(1344)
+    expect(base.windowState.y).toBe(0)
   })
 })

@@ -56,6 +56,14 @@ const PIXIES_SHELL_FLAG = '__DSH_PIXIES_SHELL__'
 /** Function-plugin identity for the client composition row. */
 export const name = 'pixies-client'
 
+/** The reference source this plugin holds while the character follows a session. */
+declare module '@deepseek-ai/dsh-api-session-controller/client' {
+  interface SessionReferenceSourceMap {
+    /** The pixies character's followed session (event follow + voice prompt). */
+    pixiesShell: unknown
+  }
+}
+
 /** Required services: Remote Events for the forwarded waterfalls, Sessions for the follow. */
 export const inject = ['remote', 'sessions']
 
@@ -72,7 +80,7 @@ let shellOverlay: HTMLDivElement | undefined
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
-  ctx.effect(() => () => pixiesStore.clear(), 'pixies-client: store teardown')
+  ctx.effect(() => () => { pixiesStore.clear() }, 'pixies-client: store teardown')
   ctx.remote.$on('approval/request', function (request, next) {
     pixiesStore.setInteraction({ kind: 'approval', sessionId: '', summary: request.toolName })
     return next()
@@ -94,7 +102,7 @@ export function apply(ctx: ClientContext): void {
       pixiesStore,
       defaultPixiesMessages,
       resolvePixiesShellBridge(),
-      (text) => { promptPixiesSession(ctx.sessions, text) },
+      text => promptPixiesSession(ctx.sessions, text),
     )
     ctx.effect(() => () => {
       unmount()

@@ -28,13 +28,30 @@ export interface PixiesTrayLike {
   destroy(): void
 }
 
+/**
+ * A display work area in display coordinates. `x`/`y` default to zero so a
+ * single primary display (or a test fake) can pass just the size, but a
+ * secondary display to the left/above the primary has negative origins and
+ * must keep them: clamping to zero is what made the avatar impossible to drag
+ * onto another monitor.
+ */
+export interface PixiesWorkArea {
+  readonly x?: number
+  readonly y?: number
+  readonly width: number
+  readonly height: number
+}
+
 /** Injected Electron capabilities. */
 export interface PixiesChromeDeps {
   readonly createWindow: () => PixiesWindowLike
   readonly createTray: () => PixiesTrayLike
   readonly registerShortcut: (accelerator: string, callback: () => void) => boolean
   readonly unregisterShortcut: (accelerator: string) => void
-  readonly workArea: () => { readonly width: number; readonly height: number }
+  /** Primary display work area, used for the initial top-right placement. */
+  readonly workArea: () => PixiesWorkArea
+  /** Drag boundary; defaults to `workArea`. The app supplies the union of all displays. */
+  readonly dragWorkArea?: () => PixiesWorkArea
 }
 
 /** Chrome geometry and identity. */
@@ -54,20 +71,20 @@ export interface PixiesChromeOptions {
   /** The mode the chrome starts in; defaults to `expanded`. */
   readonly initialMode?: PixiesWindowMode
   /**
-   * Last position the user dragged the window to (per mode). When supplied,
-   * `createPixiesChrome` restores that position instead of recomputing it
-   * from the screen margin — the user has chosen where Pixies should sit.
+   * Last position the user dragged the window to (per mode). The chrome reads
+   * and mutates this object in place, so `resetPosition` can drop both modes.
    */
   readonly initialPosition?: {
-    readonly mini?: { readonly x: number; readonly y: number }
-    readonly expanded?: { readonly x: number; readonly y: number }
+    mini?: { readonly x: number; readonly y: number }
+    expanded?: { readonly x: number; readonly y: number }
   }
   /**
-   * Called whenever the user drags the window to a new position; the chrome
-   * does not know how to persist. Receives the mode that was active while
-   * dragging and the new top-left in display coordinates.
+   * Called on every applied drag move. The app keeps its in-memory placement
+   * current here; persistence belongs to `onDragEnd`.
    */
   readonly onDragged?: (position: { readonly mode: PixiesWindowMode; readonly x: number; readonly y: number }) => void
+  /** Called once when a drag gesture ends; the app persists the placement here. */
+  readonly onDragEnd?: (position: { readonly mode: PixiesWindowMode; readonly x: number; readonly y: number }) => void
 }
 
 /** The two window modes: a corner mini avatar and the full panel. */
@@ -75,7 +92,7 @@ export type PixiesWindowMode = 'mini' | 'expanded'
 
 /**
  * Compute the top-right placement of the floating window inside the screen
- * work area, clamped to non-negative coordinates.
+ * work area, clamped to the work-area origin.
  * @param windowSize - floating window dimensions.
  * @param workArea - the display's usable area.
  * @param margin - screen-edge margin.
@@ -83,36 +100,63 @@ export type PixiesWindowMode = 'mini' | 'expanded'
  */
 export function topRightPosition(
   windowSize: { readonly width: number; readonly height: number },
-  workArea: { readonly width: number; readonly height: number },
+  workArea: PixiesWorkArea,
   margin: number,
 ): { readonly x: number; readonly y: number } {
+  const originX = workArea.x ?? 0
+  const originY = workArea.y ?? 0
   return {
-    x: Math.max(0, workArea.width - windowSize.width - margin),
-    y: Math.max(0, margin),
+    x: Math.max(originX, originX + workArea.width - windowSize.width - margin),
+    y: originY + margin,
   }
 }
 
 /**
- * Clamp a desired position so the whole window stays inside the display
- * work area. Off-screen coordinates are pinned to the closest edge so a
- * dragged window can never be lost (a user with a 4K display who moves it
- * to a 1080p laptop screen would otherwise see the window vanish).
+ * Clamp a desired position so the whole window stays inside the display work
+ * area. The origin is honored, so a window dragged onto a display left of the
+ * primary keeps its negative coordinates instead of snapping back.
  * @param position - desired top-left.
  * @param size - the window dimensions.
- * @param workArea - the display's usable area.
+ * @param workArea - the usable area (possibly the union of all displays).
  * @returns the clamped top-left.
  */
 export function clampPositionToWorkArea(
   position: { readonly x: number; readonly y: number },
   size: { readonly width: number; readonly height: number },
-  workArea: { readonly width: number; readonly height: number },
+  workArea: PixiesWorkArea,
 ): { readonly x: number; readonly y: number } {
-  const maxX = Math.max(0, workArea.width - size.width)
-  const maxY = Math.max(0, workArea.height - size.height)
+  const minX = workArea.x ?? 0
+  const minY = workArea.y ?? 0
+  const maxX = Math.max(minX, minX + workArea.width - size.width)
+  const maxY = Math.max(minY, minY + workArea.height - size.height)
   return {
-    x: Math.min(Math.max(0, position.x), maxX),
-    y: Math.min(Math.max(0, position.y), maxY),
+    x: Math.min(Math.max(minX, position.x), maxX),
+    y: Math.min(Math.max(minY, position.y), maxY),
   }
+}
+
+/**
+ * Bounding box covering every display work area. Dragging is clamped to this
+ * box, so the avatar can move between monitors while still never disappearing
+ * into the void outside the desktop.
+ * @param areas - work areas of all attached displays.
+ * @returns their union, or a zero-sized area at the origin when none exist.
+ */
+export function unionWorkArea(areas: readonly PixiesWorkArea[]): PixiesWorkArea {
+  if (areas.length === 0) return { x: 0, y: 0, width: 0, height: 0 }
+  let left = Infinity
+  let top = Infinity
+  let right = -Infinity
+  let bottom = -Infinity
+  for (const area of areas) {
+    const x = area.x ?? 0
+    const y = area.y ?? 0
+    left = Math.min(left, x)
+    top = Math.min(top, y)
+    right = Math.max(right, x + area.width)
+    bottom = Math.max(bottom, y + area.height)
+  }
+  return { x: left, y: top, width: right - left, height: bottom - top }
 }
 
 /** The owned chrome controller. */
@@ -129,22 +173,25 @@ export interface PixiesChromeController {
   readonly hide: () => void
   readonly toggle: () => void
   /**
-   * Move the window by a pointer delta (CSS pixels relative to the window).
-   * Renderer reports screen-space movement; the controller translates it
-   * into a window-space delta and clamps the result to the display work
-   * area. The current mode is the one the drag started in (a drag is
-   * mode-stable: the user grabs, moves, releases).
+   * Move the window by a pointer delta (screen pixels). The renderer measures
+   * screen-space movement; the controller translates it into a window-space
+   * delta and clamps the result to the drag boundary.
    */
   readonly dragBy: (deltaX: number, deltaY: number) => void
+  /** Finish a drag gesture and report the final position once. */
+  readonly endDrag: () => void
+  /** Forget saved positions and return the window to its default corner. */
+  readonly resetPosition: () => void
   readonly dispose: () => void
 }
 
 /**
  * Create the tray chrome: position the floating window at the top-right,
  * wire the tray click to toggle visibility, and register the global shortcut
- * to show the window. With `miniSize`, the window starts in (or defaults to
- * the given) mode and `setMode` swaps between the mini peek geometry and the
- * expanded panel geometry.
+ * to show the window. With `miniSize`, `setMode` swaps between the mini peek
+ * geometry and the expanded panel geometry; a mode change without a saved
+ * position for the target mode grows/shrinks around the current window so the
+ * avatar never jumps back to a corner the user dragged it away from.
  * @param deps - injected Electron capabilities.
  * @param options - geometry and identity.
  * @returns the controller over window, tray, and shortcut.
@@ -156,28 +203,31 @@ export function createPixiesChrome(deps: PixiesChromeDeps, options: PixiesChrome
   const miniSize = options.miniSize ?? options.windowSize
   const miniMargin = options.miniMargin ?? options.screenMargin
   let mode: PixiesWindowMode = options.initialMode ?? 'expanded'
-  const placeWindow = (
-    size: { readonly width: number; readonly height: number },
-    margin: number,
-    workArea: { readonly width: number; readonly height: number },
-  ): { readonly x: number; readonly y: number } => {
-    const stored = options.initialPosition?.[mode]
-    if (stored !== undefined) {
-      // Restore last position, but clamp against the current display — the
-      // user's saved coords may exceed the new monitor's work area.
-      return clampPositionToWorkArea(stored, size, workArea)
-    }
-    return topRightPosition(size, workArea, margin)
-  }
-  const applyMode = (next: PixiesWindowMode): void => {
+  const dragArea = (): PixiesWorkArea => (deps.dragWorkArea ?? deps.workArea)()
+
+  const applyMode = (next: PixiesWindowMode, initial = false): void => {
+    const previous = window.getBounds()
     mode = next
     const size = next === 'mini' ? miniSize : options.windowSize
     const margin = next === 'mini' ? miniMargin : options.screenMargin
-    const position = placeWindow(size, margin, deps.workArea())
+    const stored = options.initialPosition?.[next]
+    let position: { readonly x: number; readonly y: number }
+    if (initial || stored !== undefined) {
+      position = stored === undefined
+        ? topRightPosition(size, deps.workArea(), margin)
+        : clampPositionToWorkArea(stored, size, dragArea())
+    } else {
+      // Center the new size on the old one horizontally and keep the top edge:
+      // expanding a dragged avatar opens the panel where the user put it.
+      position = clampPositionToWorkArea({
+        x: previous.x - (size.width - previous.width) / 2,
+        y: previous.y,
+      }, size, dragArea())
+    }
     window.setSize(size.width, size.height)
-    window.setPosition(position.x, position.y)
+    window.setPosition(Math.round(position.x), Math.round(position.y))
   }
-  applyMode(mode)
+  applyMode(mode, true)
   const setMode = (next: PixiesWindowMode): void => {
     if (next === mode) return
     applyMode(next)
@@ -190,37 +240,45 @@ export function createPixiesChrome(deps: PixiesChromeDeps, options: PixiesChrome
   const toggle = (): void => { if (window.isVisible()) hide(); else show() }
   tray.on('click', toggle)
   const shortcutRegistered = deps.registerShortcut(options.accelerator, show)
-  // Apply the drag delta on top of the current window bounds; clamp the new
-  // origin so a fast drag past the screen edge still leaves the window
-  // fully on-screen. The renderer is the source of the delta (it sees the
-  // pointer, we do not), so a tiny stale-bounds race is harmless: the clamp
-  // pulls the window back inside the work area on the next tick.
   const dragBy = (deltaX: number, deltaY: number): void => {
     const bounds = window.getBounds()
-    const workArea = deps.workArea()
+    const area = dragArea()
     // Guard against non-finite coordinates slipping past the renderer: if the
     // window has not yet received its first on-screen bounds (e.g. immediately
-    // after `show` on macOS) `getBounds` can return undefined fields, or the
-    // display service may report NaN sizes while it warms up. Both paths
-    // produce NaN positions that BrowserWindow.setPosition rejects at the
-    // C++ binding with `conversion failure from <undefined|NaN>`.
+    // after `show` on macOS) `getBounds` can return undefined fields.
     if (!Number.isFinite(bounds.x) || !Number.isFinite(bounds.y)) return
-    if (!Number.isFinite(workArea.width) || !Number.isFinite(workArea.height)) return
-    const size = { width: bounds.width, height: bounds.height }
+    if (!Number.isFinite(area.width) || !Number.isFinite(area.height)) return
     const next = clampPositionToWorkArea(
       { x: bounds.x + deltaX, y: bounds.y + deltaY },
-      size,
-      workArea,
+      { width: bounds.width, height: bounds.height },
+      area,
     )
     if (!Number.isFinite(next.x) || !Number.isFinite(next.y)) return
-    window.setPosition(next.x, next.y)
-    options.onDragged?.({ mode, x: next.x, y: next.y })
+    // Electron's setPosition accepts integers only: Retina pointer deltas
+    // arrive fractional and a fractional origin throws "conversion failure".
+    const x = Math.round(next.x)
+    const y = Math.round(next.y)
+    window.setPosition(x, y)
+    options.onDragged?.({ mode, x, y })
+  }
+  const snapshot = (): { readonly mode: PixiesWindowMode; readonly x: number; readonly y: number } => {
+    const bounds = window.getBounds()
+    return { mode, x: Math.round(bounds.x), y: Math.round(bounds.y) }
+  }
+  const endDrag = (): void => { options.onDragEnd?.(snapshot()) }
+  const resetPosition = (): void => {
+    const stored = options.initialPosition
+    if (stored !== undefined) {
+      delete stored.mini
+      delete stored.expanded
+    }
+    applyMode(mode, true)
   }
   const dispose = (): void => {
     deps.unregisterShortcut(options.accelerator)
     tray.destroy()
   }
-  const controller: PixiesChromeController = {
+  return {
     window,
     tray,
     shortcutRegistered,
@@ -230,7 +288,8 @@ export function createPixiesChrome(deps: PixiesChromeDeps, options: PixiesChrome
     hide,
     toggle,
     dragBy,
+    endDrag,
+    resetPosition,
     dispose,
   }
-  return controller
 }
