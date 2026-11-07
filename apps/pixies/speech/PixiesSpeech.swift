@@ -8,9 +8,11 @@
 //                          {"type":"final","text":..} {"type":"error","message":..}
 //                          Stop on stdin EOF or SIGTERM/SIGINT.
 //
-// TCC note: the responsible process is the spawning app (the Pixies Electron
-// shell), so the usage descriptions come from that bundle's Info.plist; the
-// dev launcher patches NSSpeechRecognitionUsageDescription in.
+// TCC note: build:speech embeds speech/Info.plist into this binary and ad-hoc
+// signs it, and the dev launcher starts the Electron shell through
+// LaunchServices so privacy prompts belong to a Pixies bundle that declares
+// both usage strings. A bare CLI spawned from an IDE inherits that IDE as its
+// responsible process and macOS aborts the first authorization request.
 
 import AVFoundation
 import Foundation
@@ -80,7 +82,6 @@ final class RecognitionLoop {
     let format = input.outputFormat(forBus: 0)
     guard format.sampleRate > 0 else {
       emitError("no input format available (no microphone?)")
-      return
     }
     let request = SFSpeechAudioBufferRecognitionRequest()
     request.shouldReportPartialResults = true
@@ -112,7 +113,6 @@ final class RecognitionLoop {
         self.consecutiveFailures += 1
         if self.consecutiveFailures > 5 {
           emitError("recognition failed repeatedly: \(error)")
-          return
         }
         self.restart()
       }
@@ -134,7 +134,7 @@ final class RecognitionLoop {
       guard let self else { return }
       // Stop the audio inflow before ending: an ended request must not receive
       // more buffers. removeTap is idempotent here via try?.
-      try? self.engine.inputNode.removeTap(onBus: 0)
+      self.engine.inputNode.removeTap(onBus: 0)
       self.request?.endAudio()
     }
     endSilence = item
@@ -155,7 +155,7 @@ final class RecognitionLoop {
     task = nil
     request?.endAudio()
     request = nil
-    try? engine.inputNode.removeTap(onBus: 0)
+    engine.inputNode.removeTap(onBus: 0)
   }
 
   func stop() {
@@ -195,11 +195,12 @@ func listen(locale: String) -> Never {
   }
   SFSpeechRecognizer.requestAuthorization { status in
     guard status == .authorized else {
-      emitError("speech recognition not authorized (status \(status.rawValue)); grant via System Settings")
-      return
+      emitError("speech recognition not authorized (status \(status.rawValue)); grant access in System Settings > Privacy & Security > Speech Recognition")
     }
     AVCaptureDevice.requestAccess(for: .audio) { granted in
-      guard granted else { emitError("microphone access denied") }
+      guard granted else {
+        emitError("microphone access denied; grant access in System Settings > Privacy & Security > Microphone")
+      }
       let loop = RecognitionLoop(recognizer: recognizer)
       let shutdown = { loop.stop(); exit(0) }
       installStopHandlers(onStop: shutdown)

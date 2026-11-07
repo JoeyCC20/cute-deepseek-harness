@@ -1,11 +1,12 @@
 /** Build and launch the unpackaged Pixies tray shell against the current workspace. */
 
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { ensureElectronSpeechPermission } from './electron-speech-permission.ts'
+import { launchViaLaunchServices, writeDevLauncher } from './launch-services.ts'
 import { APP_ROOT, ensurePixiesOfficeSkills, preparePixiesProject, REPOSITORY_ROOT } from './stage.ts'
 
 const BUILD_ROOT = join(APP_ROOT, '.pixies-build')
@@ -67,12 +68,38 @@ async function launchElectron(projectDir: string): Promise<void> {
   }
   console.log(`pixies development: DSH_HOME=${home}`)
   console.log(`pixies development: inspectors main=${String(mainPort)}, renderer=${String(rendererPort)}, host=${String(hostPort)}`)
-  await run(electron, [
+  const args = [
     `--inspect=127.0.0.1:${String(mainPort)}`,
     `--remote-debugging-port=${String(rendererPort)}`,
     `--user-data-dir=${userData}`,
     APP_ROOT,
-  ], APP_ROOT, environment)
+  ]
+  // A direct spawn inherits the IDE/terminal as its TCC responsible process.
+  // When that app lacks NSSpeechRecognitionUsageDescription, macOS aborts the
+  // speech helper on its first authorization request. LaunchServices assigns
+  // the prompts to our own bundle, which declares both usage strings.
+  if (process.platform === 'darwin') {
+    let launcher: ReturnType<typeof writeDevLauncher> | undefined
+    try {
+      launcher = writeDevLauncher(join(BUILD_ROOT, 'dev-launcher'), electron, args, environment, APP_ROOT)
+    } catch (error) {
+      console.warn(`pixies development: LaunchServices launcher unavailable (${error instanceof Error ? error.message : String(error)}); falling back to a direct launch`)
+    }
+    if (launcher !== undefined) {
+      await launchViaLaunchServices(launcher.app, launcher.log)
+      return
+    }
+  }
+  await run(electron, args, APP_ROOT, environment)
+}
+
+/** True when the Swift helper is absent or older than its sources. */
+function speechBinaryStale(): boolean {
+  const binary = join(APP_ROOT, 'lib', 'pixies-speech')
+  if (!existsSync(binary)) return true
+  const built = statSync(binary).mtimeMs
+  return [join(APP_ROOT, 'speech', 'PixiesSpeech.swift'), join(APP_ROOT, 'speech', 'Info.plist')]
+    .some(source => existsSync(source) && statSync(source).mtimeMs > built)
 }
 
 /** The staged bundle entry that proves an existing project is still usable. */
@@ -98,6 +125,13 @@ async function main(): Promise<void> {
     preparePixiesProject(projectDir)
   }
   ensurePixiesOfficeSkills(DEVELOPMENT_ROOT)
+  if (process.platform === 'darwin' && speechBinaryStale()) {
+    try {
+      await runPackageScript('build:speech', APP_ROOT)
+    } catch (error) {
+      console.warn(`pixies development: speech helper build failed (${error instanceof Error ? error.message : String(error)}); voice input will report the failure`)
+    }
+  }
   await launchElectron(projectDir)
 }
 

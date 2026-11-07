@@ -251,11 +251,15 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
   }, [bridge, sendText, copy])
 
   const onMicToggle = useCallback((): void => {
+    if (bridge === undefined) {
+      setSpeechError(copy.speechUnavailable)
+      return
+    }
     if (listening) {
       // Stopping produces no further event, but the already-recognized draft
       // is still the user's input: send it instead of dropping it.
       const recognized = partial
-      bridge?.stopSpeech()
+      bridge.stopSpeech()
       setListening(false)
       setPartial('')
       if (recognized.trim() !== '') sendText(recognized)
@@ -266,8 +270,8 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
     setListening(true)
     setPartial('')
     setSpeechError('')
-    bridge?.startSpeech()
-  }, [listening, partial, bridge, sendText])
+    bridge.startSpeech()
+  }, [listening, partial, bridge, sendText, copy])
 
   const onSend = useCallback((text: string): void => {
     if (text.trim() === '') return

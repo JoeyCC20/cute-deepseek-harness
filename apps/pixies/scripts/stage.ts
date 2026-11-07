@@ -1,7 +1,20 @@
 /** Shared project staging for the dev launcher and the macOS packager. */
 
 import { createRequire } from 'node:module'
-import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmdirSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { DESKTOP_HOST_PROTOCOL_VERSION } from '../../desktop/src/host-protocol.ts'
 import type { DesktopRelease } from '../../desktop/src/release.ts'
@@ -75,6 +88,88 @@ export function ensurePixiesOfficeSkills(developmentRoot: string): void {
 }
 
 /**
+ * Mirror pnpm's virtual-hoist links into a pixies-owned view, dropping links
+ * whose target no longer exists. A partial install or a branch switch can leave
+ * dangling links behind, and the Desktop Host stager resolves every link with
+ * `realpathSync`, so a single stale entry aborts the whole launch. The view is
+ * updated in place: replacing hundreds of links on every launch trips bulk
+ * deletion guards, while unchanged links are simply reused.
+ * @param sourceRoot - pnpm's `.pnpm/node_modules` directory.
+ * @param viewRoot - persistent view owned by the pixies development tree.
+ * @returns the view directory, safe to pass as `dependencyDir`.
+ */
+export function prepareDependencyView(sourceRoot: string, viewRoot: string): string {
+  if (!existsSync(sourceRoot)) {
+    throw new Error('pixies staging: workspace dependency links are missing; run pnpm install')
+  }
+  mkdirSync(viewRoot, { recursive: true })
+  const wanted = new Set<string>()
+  const mirror = (source: string, destination: string): void => {
+    let target: string
+    try {
+      target = realpathSync(source)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      throw error
+    }
+    wanted.add(destination)
+    try {
+      if (realpathSync(destination) === target) return
+    } catch {
+      // Missing or dangling: replace the single entry below.
+    }
+    mkdirSync(dirname(destination), { recursive: true })
+    try {
+      unlinkSync(destination)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    symlinkSync(target, destination, process.platform === 'win32' ? 'junction' : 'dir')
+  }
+  for (const entry of readdirSync(sourceRoot, { withFileTypes: true })) {
+    if (entry.name === '.bin') continue
+    const source = join(sourceRoot, entry.name)
+    if (entry.name.startsWith('@') && (entry.isDirectory() || entry.isSymbolicLink())) {
+      for (const scoped of readdirSync(source, { withFileTypes: true })) {
+        if (!scoped.isDirectory() && !scoped.isSymbolicLink()) continue
+        mirror(join(source, scoped.name), join(viewRoot, entry.name, scoped.name))
+      }
+      continue
+    }
+    if (entry.isDirectory() || entry.isSymbolicLink()) mirror(source, join(viewRoot, entry.name))
+  }
+  pruneDependencyView(viewRoot, wanted)
+  return viewRoot
+}
+
+/** Remove view entries that no longer correspond to a resolvable dependency. */
+function pruneDependencyView(directory: string, wanted: ReadonlySet<string>): void {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      pruneDependencyView(path, wanted)
+      if (readdirSync(path).length === 0) rmdirSync(path)
+      continue
+    }
+    if (!wanted.has(path)) unlinkSync(path)
+  }
+}
+
+/**
+ * Retire a previous disposable project instead of letting the Desktop Host
+ * stager delete it with one recursive `rmSync`: its hundreds of dependency
+ * links exceed the bulk-deletion threshold of hosted terminals. Moving the
+ * tree to the OS temp directory is a rename, so the stager sees an absent
+ * destination and creates a fresh project with no deletion at all.
+ * @param projectDir - the project directory about to be re-staged.
+ */
+export function retireProjectDir(projectDir: string): void {
+  if (!existsSync(projectDir)) return
+  const retired = join(tmpdir(), `pixies-dev-project-${String(process.pid)}-${String(Date.now())}`)
+  renameSync(projectDir, retired)
+}
+
+/**
  * Prepare the disposable npm-project view over the current workspace and
  * stage the pixies bundle into it. Used by `dev` and by the macOS packager.
  * @param projectDir - directory replaced with the generated project.
@@ -97,11 +192,15 @@ export function preparePixiesProject(projectDir: string): string {
     nodeVersion: process.versions.node,
     pnpmVersion,
   }
+  retireProjectDir(projectDir)
   const project = prepareDevelopmentProject({
     projectDir,
     cliDir: join(REPOSITORY_ROOT, 'apps', 'cli'),
     hostDir: join(REPOSITORY_ROOT, 'apps', 'desktop-host'),
-    dependencyDir: join(REPOSITORY_ROOT, 'node_modules', '.pnpm', 'node_modules'),
+    dependencyDir: prepareDependencyView(
+      join(REPOSITORY_ROOT, 'node_modules', '.pnpm', 'node_modules'),
+      join(APP_ROOT, '.pixies-build', 'development', 'dependency-view'),
+    ),
     release,
   })
   stagePixiesBundle(project)

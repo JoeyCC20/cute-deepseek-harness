@@ -8,7 +8,7 @@
   "main": "lib/main.js",
   "scripts": {
     "build": "tsc -b && tsdown && node scripts/copy-assets.mjs",
-    "build:speech": "mkdir -p lib && swiftc -O -swift-version 5 speech/PixiesSpeech.swift -o lib/pixies-speech",
+    "build:speech": "mkdir -p lib && swiftc -O -swift-version 5 speech/PixiesSpeech.swift -o lib/pixies-speech -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker speech/Info.plist && codesign --force --sign - lib/pixies-speech",
     "dev": "tsx scripts/dev.ts",
     "start": "tsx scripts/dev.ts --skip-build",
     "package:mac": "tsx scripts/package-mac.ts"

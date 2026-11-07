@@ -1,7 +1,7 @@
 /**
  * Speech subprocess controller tests (test-validation phase3 method 9):
- * NDJSON parsing, event flow with chunk buffering, fail-soft on a missing
- * binary, and stop semantics — all against an injected fake spawn.
+ * NDJSON parsing, event flow with chunk buffering, and every failure path
+ * being surfaced to the UI instead of leaving it stuck on "listening".
  */
 import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
@@ -14,22 +14,31 @@ import type { PixiesSpeechEvent, PixiesSpeechSpawn } from '../src/speech.ts'
 const EXISTING_FILE = fileURLToPath(import.meta.url)
 const MISSING_BINARY = '/nonexistent-pixies-speech-binary'
 
+type Listener = (...args: unknown[]) => void
+
 function fakeChild(): {
   child: ChildProcess
   state: { ended: boolean; signals: string[] }
   emitLine: (line: string) => void
-  emitExit: () => void
+  emitStderr: (text: string) => void
+  emitExit: (code?: number | null, signal?: NodeJS.Signals | null) => void
+  emitProcessError: (message: string) => void
 } {
   const stdout = new EventEmitter() as EventEmitter & { setEncoding: (encoding: string) => void }
   stdout.setEncoding = (): void => {}
-  const exitListeners: Array<() => void> = []
+  const stderr = new EventEmitter() as EventEmitter & { setEncoding: (encoding: string) => void }
+  stderr.setEncoding = (): void => {}
+  const exitListeners: Listener[] = []
+  const errorListeners: Listener[] = []
   const state = { ended: false, signals: [] as string[] }
   const child = {
     stdout,
+    stderr,
     stdin: { end: (): void => { state.ended = true } },
     kill: (signal: NodeJS.Signals): void => { state.signals.push(signal) },
-    once: (event: string, listener: (...args: never[]) => void): ChildProcess => {
-      if (event === 'exit') exitListeners.push(() => { listener(...[] as never[]) })
+    once: (event: string, listener: Listener): ChildProcess => {
+      if (event === 'exit') exitListeners.push(listener)
+      if (event === 'error') errorListeners.push(listener)
       return child
     },
     on: (): ChildProcess => child,
@@ -38,11 +47,20 @@ function fakeChild(): {
     child,
     state,
     emitLine: (line) => { stdout.emit('data', line) },
-    emitExit: () => { for (const listener of [...exitListeners]) listener() },
+    emitStderr: (text) => { stderr.emit('data', text) },
+    emitExit: (code = 0, signal = null) => {
+      for (const listener of [...exitListeners]) listener(code, signal)
+    },
+    emitProcessError: (message) => {
+      for (const listener of [...errorListeners]) listener(new Error(message))
+    },
   }
 }
 
-function controllerHarness(existingBinary: boolean): {
+function controllerHarness(
+  existingBinary: boolean,
+  spawnProcess?: PixiesSpeechSpawn,
+): {
   controller: PixiesSpeechController
   events: PixiesSpeechEvent[]
   calls: Array<{ binary: string; args: readonly string[] }>
@@ -51,15 +69,15 @@ function controllerHarness(existingBinary: boolean): {
   const events: PixiesSpeechEvent[] = []
   const { child, ...harness } = fakeChild()
   const calls: Array<{ binary: string; args: readonly string[] }> = []
-  const spawnProcess: PixiesSpeechSpawn = (binary, args, options) => {
+  const spawn: PixiesSpeechSpawn = spawnProcess ?? ((binary, args, options) => {
     calls.push({ binary, args })
     expect(options.stdio).toEqual(['pipe', 'pipe', 'pipe'])
     return child
-  }
+  })
   const controller = new PixiesSpeechController({
     binary: existingBinary ? EXISTING_FILE : MISSING_BINARY,
     onEvent: (event) => { events.push(event) },
-    spawnProcess,
+    spawnProcess: spawn,
   })
   return { controller, events, calls, harness: { ...harness, child } }
 }
@@ -118,8 +136,11 @@ describe('PixiesSpeechController', () => {
       { type: 'error', message: 'x' },
     ])
 
-    harness.emitExit()
+    // The CLI already reported its own error; the controller must not add a
+    // second, less useful "exited" error on top of it.
+    harness.emitExit(1)
     expect(controller.active).toBe(false)
+    expect(events).toHaveLength(4)
   })
 
   it('start while active is a no-op', () => {
@@ -133,7 +154,7 @@ describe('PixiesSpeechController', () => {
   })
 
   it('stop ends stdin, sends SIGTERM, and detaches', () => {
-    const { controller, harness, calls } = controllerHarness(true)
+    const { controller, harness, calls, events } = controllerHarness(true)
 
     controller.start()
     controller.stop()
@@ -142,21 +163,65 @@ describe('PixiesSpeechController', () => {
     expect(harness.state.signals).toEqual(['SIGTERM'])
     expect(controller.active).toBe(false)
 
+    // A self-initiated stop is not a failure, even when the child exits later.
+    harness.emitExit(0, 'SIGTERM')
+    expect(events).toEqual([])
+
     controller.stop() // no-op while idle
     expect(harness.state.signals).toEqual(['SIGTERM'])
     expect(calls).toHaveLength(1)
   })
 
-  it('fails soft when the binary is missing', () => {
+  it('reports a missing binary instead of failing silently', () => {
     const { controller, events, calls } = controllerHarness(false)
 
     expect(() => { controller.start() }).not.toThrow()
     expect(calls).toHaveLength(0)
     expect(controller.active).toBe(false)
-    expect(events).toEqual([])
+    expect(events).toHaveLength(1)
+    const event = events[0]
+    expect(event?.type).toBe('error')
+    if (event?.type !== 'error') throw new Error('expected an error event')
+    expect(event.message).toContain('speech helper is missing')
 
     controller.stop()
     controller.dispose()
+  })
+
+  it('reports a thrown spawn as a visible error', () => {
+    const { controller, events } = controllerHarness(true, () => { throw new Error('spawn EACCES') })
+
+    controller.start()
+
+    expect(controller.active).toBe(false)
+    expect(events).toEqual([{ type: 'error', message: 'speech helper could not start: spawn EACCES' }])
+  })
+
+  it('reports a child process error', () => {
+    const { controller, events, harness } = controllerHarness(true)
+
+    controller.start()
+    harness.emitProcessError('spawn ENOENT')
+
+    expect(controller.active).toBe(false)
+    expect(events).toEqual([{ type: 'error', message: 'speech helper process error: spawn ENOENT' }])
+  })
+
+  it('surfaces an unexpected exit, the signal, and the child stderr', () => {
+    const { controller, events, harness } = controllerHarness(true)
+
+    controller.start()
+    harness.emitStderr('TCC: missing usage description\n')
+    harness.emitExit(null, 'SIGABRT')
+
+    expect(controller.active).toBe(false)
+    expect(events).toHaveLength(1)
+    const event = events[0]
+    expect(event?.type).toBe('error')
+    if (event?.type !== 'error') throw new Error('expected an error event')
+    expect(event.message).toContain('signal SIGABRT')
+    expect(event.message).toContain('Speech Recognition and Microphone access')
+    expect(event.message).toContain('TCC: missing usage description')
   })
 
   it('dispose stops a live listener', () => {

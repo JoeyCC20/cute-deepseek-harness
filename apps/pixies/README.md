@@ -14,7 +14,7 @@ Everything this feature owns lives in two additive trees — `apps/pixies` and
 
 ```sh
 pnpm run build             # build the workspace once
-pnpm run build:speech      # optional: Swift SFSpeechRecognizer CLI -> lib/pixies-speech
+pnpm run build:speech      # Swift SFSpeechRecognizer CLI + embedded TCC Info.plist
 pnpm run dev:pixies        # full rebuild + prepared project + Electron
 pnpm run start:pixies      # reuse the prepared project and launch immediately
 ```
@@ -40,11 +40,12 @@ already present in the environment. `DEEPSEEK_API_KEY` is required for replies.
 - Both text prompts and final speech transcripts are queued into the followed session through
   `promptPixiesSession`; assistant replies stream back into the history. The window mode is owned by
   the main process and reconciled by the renderer on mount.
-- The mic button drives the Swift `SFSpeechRecognizer` CLI subprocess
-  (`speech/PixiesSpeech.swift`): partial transcripts fill a listening bubble, and a final transcript
-  is sent as a prompt. First use triggers the macOS microphone + speech-recognition permission
-  prompts; the launcher patches `NSSpeechRecognitionUsageDescription` into Electron.app
-  automatically.
+- The mic button asks the windowed main process for microphone access first, then drives the Swift
+  `SFSpeechRecognizer` CLI subprocess (`speech/PixiesSpeech.swift`): partial transcripts fill a
+  listening bubble, and a final transcript is sent as a prompt. First use triggers macOS microphone
+  and speech-recognition prompts. `build:speech` embeds `speech/Info.plist` into the helper and
+  ad-hoc signs it; the dev launcher starts Electron through LaunchServices so TCC attributes those
+  prompts to a Pixies bundle rather than the IDE or terminal that spawned it.
 - The tray uses an anti-aliased spider-mask template image, so the menu bar recolors it for light
   and dark themes.
 
@@ -57,12 +58,14 @@ already present in the environment. `DEEPSEEK_API_KEY` is required for replies.
 - `src/host-proxy.ts` — loopback forwarder, desktop boot payload, WebSocket upgrade authentication.
 - `src/preload-app.ts` — sandboxed preload bridge (`window.dshPixies` and `dshDesktopBoot`).
 - `src/speech.ts` — Node-side controller for the `pixies-speech` subprocess (NDJSON streaming,
-  fail-soft when the binary is absent).
+  visible error events for a missing binary, a failed spawn, or an unexpected exit).
 - `speech/PixiesSpeech.swift` — the Swift SFSpeechRecognizer CLI (`probe` / `listen`).
+- `speech/Info.plist` — TCC usage descriptions embedded in the helper and ad-hoc signed by the build.
+- `scripts/launch-services.ts` — LaunchServices dev launcher that owns the app's privacy prompts.
 - `src/host-process.ts` / `src/host-protocol.ts` — verbatim copies of the desktop frame-pipe carrier.
 - `src/icon.ts` — deterministic runtime PNGs for the tray dot and the spider-mask template icon.
 - `src/pixies-keychain.cjs` — pre-boot credential injection (copied into `lib/` by the build).
-- `scripts/dev.ts` — build + disposable-project reuse + Electron launcher.
+- `scripts/dev.ts` — build + speech-helper rebuild + disposable-project reuse + LaunchServices launcher.
 - `scripts/stage.ts` — profile/bundle staging and Office-skill asset restoration.
 - `tests/` — unit tests for the chrome facade, forwarder, icons, keychain, and speech controller.
 
@@ -73,7 +76,9 @@ The React surfaces live in the sibling additive plugin `packages/extensions/pixi
 
 ## Known Limitations and Deferred Work
 
-- Speech recognition depends on the macOS TCC grants of the dev shell; automated smoke covers the
-  bridge and the subprocess pipeline, live recognition is verified by hand on first use.
+- Speech recognition needs one-time macOS Microphone and Speech Recognition grants for the Pixies
+  bundle. A denial is shown in the panel instead of leaving the bubble on "listening"; automated
+  smoke covers the bridge and the subprocess pipeline, live recognition is verified by hand on
+  first use.
 - A macOS packaging script exists (`scripts/package-mac.ts`), but the primary supported path is the
   development launcher above.

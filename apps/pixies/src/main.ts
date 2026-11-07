@@ -33,6 +33,7 @@ import {
   protocol,
   screen,
   session,
+  systemPreferences,
   Tray,
 } from 'electron'
 import { createPixiesChrome, unionWorkArea, type PixiesChromeDeps, type PixiesWindowLike } from './chrome.ts'
@@ -663,15 +664,21 @@ async function main(): Promise<void> {
   // Phase 6 evidence sink: recorded only while the smoke runs, so a normal
   // session never accumulates speech events.
   const speechEvents: PixiesSpeechEvent[] = []
-  const speech = new PixiesSpeechController({
-    binary: speechBinary(),
-    onEvent: (event) => {
-      if (smokeFile !== undefined) speechEvents.push(event)
-      traceSpeechEvent(event)
-      pixiesWindow?.webContents.send('pixies:speech', event)
-    },
+  const notifySpeech = (event: PixiesSpeechEvent): void => {
+    if (smokeFile !== undefined) speechEvents.push(event)
+    traceSpeechEvent(event)
+    pixiesWindow?.webContents.send('pixies:speech', event)
+  }
+  const speech = new PixiesSpeechController({ binary: speechBinary(), onEvent: notifySpeech })
+  ipcMain.handle('pixies:speech:start', async () => {
+    // The headless Swift helper cannot present a microphone prompt; ask from
+    // the windowed main process first so TCC can attach the dialog to Pixies.
+    if (process.platform === 'darwin' && !(await systemPreferences.askForMediaAccess('microphone'))) {
+      notifySpeech({ type: 'error', message: 'microphone access denied; grant Microphone access in System Settings' })
+      return
+    }
+    speech.start()
   })
-  ipcMain.handle('pixies:speech:start', () => { speech.start() })
   ipcMain.handle('pixies:speech:stop', () => { speech.stop() })
   // Renderer drags send screen-space deltas; the controller clamps them
   // against the union of all displays before moving the window. The same delta

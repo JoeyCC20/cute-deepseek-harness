@@ -25,6 +25,8 @@ export interface PixiesPanelMessages {
   readonly listening?: string
   /** Bubble headline for a failed speech round (the reason is appended by the caller). */
   readonly speechFailed?: string
+  /** Bubble text when the mic button is clicked without a shell bridge. */
+  readonly speechUnavailable?: string
   /** Bubble headline for a failed send round (the reason is appended by the caller). */
   readonly promptFailed?: string
   /** Bubble text shown between a user prompt and the first assistant reply. */
@@ -66,6 +68,7 @@ export const defaultPixiesMessages: PixiesResolvedMessages = {
   collapse: '收起',
   listening: '正在聆听…',
   speechFailed: '语音输入失败',
+  speechUnavailable: '语音输入需要桌面窗口，当前页面不可用',
   promptFailed: '发送失败',
   thinking: '思考中…',
   title: 'Pixies · 蜘蛛侠',

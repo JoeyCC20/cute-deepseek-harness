@@ -1,8 +1,9 @@
 /**
  * Node-side controller for the `pixies-speech` Swift CLI (SFSpeechRecognizer
  * subprocess). Spawns the binary in `listen` mode, parses its NDJSON stdout
- * into typed events, and fails soft — a missing binary or a dead child only
- * ends the stream, never the app. Testable against an injected spawn.
+ * into typed events. A missing binary, a failed spawn, or a dead child is
+ * surfaced as an `error` event instead of leaving the UI stuck on listening.
+ * Testable against an injected spawn.
  * @module @deepseek-ai/dsh-pixies-app/speech
  */
 
@@ -88,8 +89,9 @@ export interface PixiesSpeechDeps {
 
 /**
  * Own the at-most-one speech-recognition child. `start()` while active is a
- * no-op; a missing binary fails soft; `stop()`/`dispose()` terminate the
- * child (stdin EOF is the CLI's primary stop signal, SIGTERM the fallback).
+ * no-op; every failure to start, spawn, or keep the child alive is surfaced as
+ * an `error` event so the UI never stays stuck on "listening". `stop()` and
+ * `dispose()` terminate the child (stdin EOF first, SIGTERM as fallback).
  */
 export class PixiesSpeechController {
   private readonly binary: string
@@ -97,6 +99,8 @@ export class PixiesSpeechController {
   private readonly spawnProcess: PixiesSpeechSpawn
   private child: ChildProcess | undefined
   private buffer = ''
+  private stderr = ''
+  private sawError = false
 
   constructor(deps: PixiesSpeechDeps) {
     this.binary = deps.binary
@@ -109,25 +113,43 @@ export class PixiesSpeechController {
     return this.child !== undefined
   }
 
-  /** Start listening; fails soft when already active or the binary is absent. */
+  /** Start listening and report any reason it cannot stay alive. */
   start(): void {
-    if (this.child !== undefined || !existsSync(this.binary)) return
+    if (this.child !== undefined) return
+    if (!existsSync(this.binary)) {
+      this.onEvent({ type: 'error', message: 'speech helper is missing; rebuild with pnpm run build:speech' })
+      return
+    }
     let child: ChildProcess
     try {
       child = this.spawnProcess(this.binary, ['listen'], { stdio: ['pipe', 'pipe', 'pipe'] })
-    } catch {
+    } catch (error) {
+      this.onEvent({ type: 'error', message: `speech helper could not start: ${error instanceof Error ? error.message : String(error)}` })
       return
     }
     this.child = child
+    this.buffer = ''
+    this.stderr = ''
+    this.sawError = false
     child.stdout?.setEncoding('utf8')
     child.stdout?.on('data', (chunk: string) => { this.consume(chunk) })
-    child.once('exit', () => {
+    child.stderr?.setEncoding('utf8')
+    child.stderr?.on('data', (chunk: string) => { this.stderr = `${this.stderr}${chunk}`.slice(-2048) })
+    // A child we stopped ourselves must not be reported as a failure.
+    const fail = (message: string): void => {
+      if (this.child !== child) return
       this.child = undefined
       this.buffer = ''
-    })
-    child.once('error', () => {
-      this.child = undefined
-      this.buffer = ''
+      if (!this.sawError) this.onEvent({ type: 'error', message })
+    }
+    child.once('error', (error: Error) => { fail(`speech helper process error: ${error.message}`) })
+    child.once('exit', (code, signal) => {
+      const reason = code !== null ? `code ${String(code)}` : `signal ${String(signal)}`
+      const privacyHint = signal === 'SIGABRT'
+        ? '; macOS denied a privacy permission — grant Speech Recognition and Microphone access in System Settings'
+        : ''
+      const detail = this.stderr.trim().slice(0, 300)
+      fail(`speech helper exited (${reason})${privacyHint}${detail === '' ? '' : `: ${detail}`}`)
     })
   }
 
@@ -158,7 +180,9 @@ export class PixiesSpeechController {
       const line = this.buffer.slice(0, newline)
       this.buffer = this.buffer.slice(newline + 1)
       const event = parseSpeechLine(line)
-      if (event !== undefined) this.onEvent(event)
+      if (event === undefined) continue
+      if (event.type === 'error') this.sawError = true
+      this.onEvent(event)
     }
   }
 }
