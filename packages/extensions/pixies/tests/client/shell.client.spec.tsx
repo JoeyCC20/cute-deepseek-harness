@@ -336,12 +336,16 @@ function fakeBridge(options: { readonly mode?: PixiesShellMode } = {}): {
   calls: string[]
   emitMode: (mode: PixiesShellMode) => void
   emitSpeech: (event: PixiesShellSpeechEvent) => void
+  emitVoiceReply: (event: unknown) => void
+  emitVoiceCommand: (event: unknown) => void
   speechListenerCount: () => number
   modeListenerCount: () => number
 } {
   const calls: string[] = []
   const speechListeners: Array<(event: PixiesShellSpeechEvent) => void> = []
   const modeListeners: Array<(mode: PixiesShellMode) => void> = []
+  const voiceListeners: Array<(event: unknown) => void> = []
+  const commandListeners: Array<(event: unknown) => void> = []
   const remove = <T,>(list: T[], item: T): void => {
     const index = list.indexOf(item)
     if (index >= 0) list.splice(index, 1)
@@ -361,6 +365,16 @@ function fakeBridge(options: { readonly mode?: PixiesShellMode } = {}): {
       modeListeners.push(listener)
       return () => { remove(modeListeners, listener) }
     },
+    speakReply: (text) => { calls.push(`speakReply:${text}`) },
+    cancelReply: () => { calls.push('cancelReply') },
+    onVoiceReply: (listener) => {
+      voiceListeners.push(listener)
+      return () => { remove(voiceListeners, listener) }
+    },
+    onVoiceCommand: (listener) => {
+      commandListeners.push(listener)
+      return () => { remove(commandListeners, listener) }
+    },
     dragBy: () => {},
   }
   return {
@@ -368,6 +382,8 @@ function fakeBridge(options: { readonly mode?: PixiesShellMode } = {}): {
     calls,
     emitMode: (mode) => { for (const listener of [...modeListeners]) listener(mode) },
     emitSpeech: (event) => { for (const listener of [...speechListeners]) listener(event) },
+    emitVoiceReply: (event) => { for (const listener of [...voiceListeners]) listener(event) },
+    emitVoiceCommand: (event) => { for (const listener of [...commandListeners]) listener(event) },
     speechListenerCount: () => speechListeners.length,
     modeListenerCount: () => modeListeners.length,
   }
@@ -771,5 +787,131 @@ describe('expanded conversation interactions', () => {
     expect(calls).toContain('expand')
     act(() => { disposer?.() })
     container.remove()
+  })
+})
+
+describe('voice-command shortcut and spoken replies', () => {
+  /** One assistant entry appended through the store's own speech path. */
+  const speak = (store: ReturnType<typeof createPixiesStore>, id: string, text: string): void => {
+    store.speak({
+      id, sessionId: 'session-1', character: 'spider-man',
+      kind: 'speech', mood: 'neutral', text, seq: 1,
+    })
+  }
+
+  /** Mount in expanded mode with the recording bridge. */
+  function expandedBench(): {
+    store: ReturnType<typeof createPixiesStore>
+    container: HTMLElement
+    bridge: ReturnType<typeof fakeBridge>
+    voice: () => HTMLElement
+    dispose: () => void
+  } {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const bridge = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge.bridge) })
+    act(() => { bridge.emitMode('expanded') })
+    return {
+      store,
+      container,
+      bridge,
+      voice: () => container.querySelector('[data-testid="pixies-voice"]') as HTMLElement,
+      dispose: () => { act(() => { disposer?.() }); container.remove() },
+    }
+  }
+
+  it('changes the avatar on the shortcut itself and delivers the recognized draft on stop', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitSpeech, emitVoiceCommand } = fakeBridge()
+    const finals: string[] = []
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, (text) => { finals.push(text) })
+    })
+    const mini = (): HTMLElement => container.querySelector('[data-testid="pixies-mini"]')!
+    expect(mini().hasAttribute('data-listening')).toBe(false)
+
+    act(() => { emitVoiceCommand({ type: 'start' }) })
+    expect(mini().getAttribute('data-listening')).toBe('')
+    expect(mini().getAttribute('aria-label')).toBe(defaultPixiesMessages.voiceCommandListening)
+    expect(container.querySelector('[data-testid="pixies-listening-ring"]')).not.toBeNull()
+    expect(container.querySelector('[data-pixies-shell]')?.getAttribute('data-listening')).toBe('')
+
+    act(() => { emitSpeech({ type: 'partial', text: '打开设置' }) })
+    act(() => { emitVoiceCommand({ type: 'stop' }) })
+    expect(finals).toEqual(['打开设置'])
+    expect(mini().hasAttribute('data-listening')).toBe(false)
+    expect(container.querySelector('[data-testid="pixies-listening-ring"]')).toBeNull()
+
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('ignores malformed wire payloads from the shortcut and speech-output channels', () => {
+    const b = expandedBench()
+    act(() => { b.bridge.emitVoiceCommand({ type: 'bogus' }) })
+    act(() => { b.bridge.emitVoiceReply(null) })
+    expect(b.container.querySelector('[data-testid="pixies-voice-error"]')).toBeNull()
+    expect(b.voice().hasAttribute('data-speaking')).toBe(false)
+    b.dispose()
+  })
+
+  it('speaks the newest assistant reply once without replaying existing history', () => {
+    const store = createPixiesStore()
+    speak(store, 'session-1#1', '旧回复')
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, calls } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
+    expect(calls.filter(call => call.startsWith('speakReply:'))).toEqual([])
+
+    act(() => { speak(store, 'session-1#2', '新回复') })
+    expect(calls.filter(call => call.startsWith('speakReply:'))).toEqual(['speakReply:新回复'])
+    act(() => { store.setInteraction({ kind: 'question', sessionId: '', summary: '还有吗' }) })
+    expect(calls.filter(call => call.startsWith('speakReply:'))).toHaveLength(1)
+
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('speaks a failed turn so a failure is not text-only', () => {
+    const b = expandedBench()
+    act(() => { b.store.appendMessage({ role: 'system', text: 'provider unavailable', mood: 'asking' }) })
+    expect(b.bridge.calls).toContain('speakReply:provider unavailable')
+    b.dispose()
+  })
+
+  it('muting cancels the current utterance and keeps later replies text-only', () => {
+    const b = expandedBench()
+    expect(b.voice().hasAttribute('data-muted')).toBe(false)
+    fireEvent.click(b.voice())
+    expect(b.bridge.calls).toContain('cancelReply')
+    expect(b.voice().getAttribute('data-muted')).toBe('')
+
+    act(() => { speak(b.store, 'session-1#3', '这条不念') })
+    expect(b.bridge.calls.filter(call => call.startsWith('speakReply:'))).toEqual([])
+    b.dispose()
+  })
+
+  it('shows the speaking state and a visible voice failure outside the reply bubble', () => {
+    const b = expandedBench()
+    act(() => { b.bridge.emitVoiceReply({ type: 'speaking' }) })
+    expect(b.voice().getAttribute('data-speaking')).toBe('')
+    expect(b.container.textContent).toContain(defaultPixiesMessages.statusSpeaking)
+
+    act(() => { b.bridge.emitVoiceReply({ type: 'error', message: 'no voice' }) })
+    expect(b.container.querySelector('[data-testid="pixies-voice-error"]')?.textContent)
+      .toBe(`${defaultPixiesMessages.voiceFailed}: no voice`)
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    expect(b.voice().hasAttribute('data-speaking')).toBe(false)
+
+    act(() => { b.bridge.emitVoiceReply({ type: 'done' }) })
+    b.dispose()
   })
 })

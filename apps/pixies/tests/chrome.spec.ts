@@ -53,6 +53,8 @@ interface ShortcutState {
   registered: boolean
   accelerator: string
   callback: () => void
+  registrations: Array<{ accelerator: string; callback: () => void }>
+  unregistered: string[]
 }
 
 function bench(): {
@@ -63,7 +65,13 @@ function bench(): {
 } {
   const { window, state: windowState } = fakeWindow()
   const { tray, state: trayState } = fakeTray()
-  const shortcutState: ShortcutState = { registered: false, accelerator: '', callback: () => {} }
+  const shortcutState: ShortcutState = {
+    registered: false,
+    accelerator: '',
+    callback: () => {},
+    registrations: [],
+    unregistered: [],
+  }
   const deps: PixiesChromeDeps = {
     createWindow: vi.fn(() => window),
     createTray: vi.fn(() => tray),
@@ -71,9 +79,13 @@ function bench(): {
       shortcutState.registered = true
       shortcutState.accelerator = accelerator
       shortcutState.callback = callback
+      shortcutState.registrations.push({ accelerator, callback })
       return true
     }),
-    unregisterShortcut: vi.fn(() => { shortcutState.registered = false }),
+    unregisterShortcut: vi.fn((accelerator: string) => {
+      shortcutState.registered = false
+      shortcutState.unregistered.push(accelerator)
+    }),
     workArea: () => ({ width: 1440, height: 900 }),
   }
   return { deps, windowState, trayState, shortcutState }
@@ -407,5 +419,50 @@ describe('multi-display geometry', () => {
     expect(placement).toEqual({})
     expect(base.windowState.x).toBe(1344)
     expect(base.windowState.y).toBe(0)
+  })
+})
+
+describe('extra global shortcuts (voice command / expand)', () => {
+  const options = {
+    accelerator: 'CommandOrControl+Shift+P',
+    windowSize: { width: 420, height: 640 },
+    screenMargin: 12,
+    tooltip: 'Pixies',
+  }
+
+  it('registers, triggers, and disposes every owned shortcut', () => {
+    const { deps, shortcutState, windowState, trayState } = bench()
+    const chrome = createPixiesChrome(deps, options)
+    const voiceCommand = vi.fn()
+    const expand = vi.fn()
+    expect(chrome.registerShortcut('CommandOrControl+Shift+J', voiceCommand)).toBe(true)
+    expect(chrome.registerShortcut('CommandOrControl+Shift+K', expand)).toBe(true)
+
+    expect(shortcutState.registrations.map(entry => entry.accelerator)).toEqual([
+      'CommandOrControl+Shift+P', 'CommandOrControl+Shift+J', 'CommandOrControl+Shift+K',
+    ])
+    shortcutState.registrations[1]?.callback()
+    shortcutState.registrations[2]?.callback()
+    expect(voiceCommand).toHaveBeenCalledTimes(1)
+    expect(expand).toHaveBeenCalledTimes(1)
+
+    chrome.dispose()
+    expect(shortcutState.unregistered).toEqual([
+      'CommandOrControl+Shift+P', 'CommandOrControl+Shift+J', 'CommandOrControl+Shift+K',
+    ])
+    expect(trayState.destroyed).toBe(true)
+    expect(windowState.visible).toBe(false)
+  })
+
+  it('reports a failed extra registration through shortcutRegistered', () => {
+    const base = bench()
+    const deps: PixiesChromeDeps = {
+      ...base.deps,
+      registerShortcut: vi.fn((accelerator: string) => accelerator !== 'CommandOrControl+Shift+K'),
+    }
+    const chrome = createPixiesChrome(deps, options)
+    expect(chrome.shortcutRegistered).toBe(true)
+    expect(chrome.registerShortcut('CommandOrControl+Shift+K', () => {})).toBe(false)
+    expect(chrome.shortcutRegistered).toBe(false)
   })
 })

@@ -5,7 +5,7 @@
  * @module @deepseek-ai/dsh-pixies/client/shell
  */
 
-import { createElement, useCallback, useEffect, useMemo, useState, type ReactElement } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import type {
   ISessions,
@@ -16,7 +16,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { PixiesExpandedView, PixiesMiniView, type PixiesConversationProps } from './conversation.tsx'
 import { feedSessionEvent, type SessionEventLike } from './feed.ts'
 import { defaultPixiesMessages, resolvePixiesMessages, type PixiesPanelMessages } from './locale.ts'
-import type { PixiesStore } from './store.ts'
+import type { PixiesMessage, PixiesStore } from './store.ts'
 
 export { defaultPixiesMessages, resolvePixiesMessages } from './locale.ts'
 export type { PixiesPanelMessages, PixiesResolvedMessages } from './locale.ts'
@@ -27,6 +27,18 @@ export type PixiesShellSpeechEvent =
   | { readonly type: 'partial'; readonly text: string }
   | { readonly type: 'final'; readonly text: string }
   | { readonly type: 'error'; readonly message: string }
+
+/** One speech-output event forwarded by the Electron preload bridge. */
+export type PixiesShellVoiceEvent =
+  | { readonly type: 'speaking' }
+  | { readonly type: 'done' }
+  | { readonly type: 'cancelled' }
+  | { readonly type: 'error'; readonly message: string }
+
+/** The global voice-command shortcut's start/stop signal. */
+export interface PixiesShellVoiceCommandEvent {
+  readonly type: 'start' | 'stop'
+}
 
 /** The two shell window modes: the corner mini avatar and the full panel. */
 export type PixiesShellMode = 'mini' | 'expanded'
@@ -49,11 +61,43 @@ export interface PixiesShellBridge {
   readonly endDrag?: () => void
   readonly onSpeech: (listener: (event: PixiesShellSpeechEvent) => void) => () => void
   readonly onMode: (listener: (mode: PixiesShellMode) => void) => () => void
+  /** Optional on older shells: speak one assistant reply through the host. */
+  readonly speakReply?: (text: string) => void
+  /** Optional on older shells: stop the reply currently being spoken. */
+  readonly cancelReply?: () => void
+  /** Optional on older shells: speaking/done/error events (wire payloads). */
+  readonly onVoiceReply?: (listener: (event: unknown) => void) => () => void
+  /** Optional on older shells: the global voice-command shortcut signal. */
+  readonly onVoiceCommand?: (listener: (event: unknown) => void) => () => void
 }
 
 /** Whether an unknown bridge payload names a real shell mode. */
 function isShellMode(value: unknown): value is PixiesShellMode {
   return value === 'mini' || value === 'expanded'
+}
+
+/** Narrow one wire payload from the speech-output channel. */
+export function isPixiesVoiceReplyEvent(value: unknown): value is PixiesShellVoiceEvent {
+  if (typeof value !== 'object' || value === null) return false
+  const payload = value as Record<string, unknown>
+  if (payload.type === 'speaking' || payload.type === 'done' || payload.type === 'cancelled') return true
+  return payload.type === 'error' && typeof payload.message === 'string'
+}
+
+/** Narrow one wire payload from the voice-command shortcut channel. */
+export function isPixiesVoiceCommandEvent(value: unknown): value is PixiesShellVoiceCommandEvent {
+  if (typeof value !== 'object' || value === null) return false
+  const type = (value as Record<string, unknown>).type
+  return type === 'start' || type === 'stop'
+}
+
+/** Newest non-user entry in the visible history (a reply or a turn failure). */
+function lastReply(messages: readonly PixiesMessage[]): PixiesMessage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message !== undefined && message.role !== 'user') return message
+  }
+  return undefined
 }
 
 /**
@@ -193,9 +237,70 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
   const [listening, setListening] = useState(false)
   const [partial, setPartial] = useState('')
   const [speechError, setSpeechError] = useState('')
+  const [voiceError, setVoiceError] = useState('')
+  const [voiceReplies, setVoiceReplies] = useState(true)
+  const [speaking, setSpeaking] = useState(false)
   const [draft, setDraft] = useState('')
   const copy = useMemo(() => resolvePixiesMessages(messages), [messages])
+  // Shortcut callbacks arrive outside React's render flow, so the latest
+  // recognized draft and the last spoken reply must live in refs.
+  const partialRef = useRef('')
+  const spokenIdRef = useRef(lastReply(state.messages)?.id)
+  const setPartialText = useCallback((text: string): void => {
+    partialRef.current = text
+    setPartial(text)
+  }, [])
+  const sendText = useCallback((text: string): void => {
+    const trimmed = text.trim()
+    if (trimmed === '') return
+    store.appendMessage({ role: 'user', text: trimmed })
+    void Promise.resolve(onSendText?.(trimmed)).catch((error: unknown) => {
+      setSpeechError(`${copy.promptFailed}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }, [onSendText, store, copy])
   useEffect(() => store.subscribe(setState), [store])
+
+  // Voice-first results: the newest reply (or turn failure) is spoken through
+  // the host. History present at mount is never replayed aloud.
+  useEffect(() => {
+    const newest = lastReply(state.messages)
+    if (newest === undefined || newest.id === spokenIdRef.current) return
+    spokenIdRef.current = newest.id
+    if (voiceReplies && bridge?.speakReply !== undefined) bridge.speakReply(newest.text)
+  }, [state.messages, voiceReplies, bridge])
+
+  useEffect(() => {
+    if (bridge?.onVoiceReply === undefined) return
+    return bridge.onVoiceReply((event: unknown) => {
+      if (!isPixiesVoiceReplyEvent(event)) return
+      if (event.type === 'speaking') {
+        setSpeaking(true)
+        setVoiceError('')
+        return
+      }
+      setSpeaking(false)
+      if (event.type === 'error') setVoiceError(`${copy.voiceFailed}: ${event.message}`)
+    })
+  }, [bridge, copy])
+
+  useEffect(() => {
+    if (bridge?.onVoiceCommand === undefined) return
+    return bridge.onVoiceCommand((event: unknown) => {
+      if (!isPixiesVoiceCommandEvent(event)) return
+      if (event.type === 'start') {
+        setListening(true)
+        setPartialText('')
+        setSpeechError('')
+        setVoiceError('')
+        return
+      }
+      // A second press ends the round: the recognized draft is still input.
+      const recognized = partialRef.current
+      setListening(false)
+      setPartialText('')
+      if (recognized.trim() !== '') sendText(recognized)
+    })
+  }, [bridge, sendText, setPartialText])
 
   // The main process owns the real geometry. Reconcile on mount so a tray
   // shortcut or a restored expanded session cannot leave the renderer showing
@@ -209,15 +314,6 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
     return () => { alive = false }
   }, [bridge])
 
-  const sendText = useCallback((text: string): void => {
-    const trimmed = text.trim()
-    if (trimmed === '') return
-    store.appendMessage({ role: 'user', text: trimmed })
-    void Promise.resolve(onSendText?.(trimmed)).catch((error: unknown) => {
-      setSpeechError(`${copy.promptFailed}: ${error instanceof Error ? error.message : String(error)}`)
-    })
-  }, [onSendText, store, copy])
-
   useEffect(() => {
     if (bridge === undefined) return
     const offMode = bridge.onMode((value) => {
@@ -226,19 +322,19 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
     const offSpeech = bridge.onSpeech((event) => {
       if (event.type === 'partial') {
         setListening(true)
-        setPartial(event.text)
+        setPartialText(event.text)
         setSpeechError('')
         return
       }
       if (event.type === 'ready') {
         setListening(true)
-        setPartial('')
+        setPartialText('')
         setSpeechError('')
         return
       }
       // final and error both end the listening round.
       setListening(false)
-      setPartial('')
+      setPartialText('')
       bridge.stopSpeech()
       if (event.type === 'final' && event.text !== '') {
         setSpeechError('')
@@ -248,7 +344,7 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
       }
     })
     return () => { offMode(); offSpeech() }
-  }, [bridge, sendText, copy])
+  }, [bridge, sendText, copy, setPartialText])
 
   const onMicToggle = useCallback((): void => {
     if (bridge === undefined) {
@@ -258,20 +354,30 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
     if (listening) {
       // Stopping produces no further event, but the already-recognized draft
       // is still the user's input: send it instead of dropping it.
-      const recognized = partial
+      const recognized = partialRef.current
       bridge.stopSpeech()
       setListening(false)
-      setPartial('')
+      setPartialText('')
       if (recognized.trim() !== '') sendText(recognized)
       return
     }
     // Feedback starts with the click: while the macOS authorization prompt is
     // pending the speech CLI emits nothing at all.
     setListening(true)
-    setPartial('')
+    setPartialText('')
     setSpeechError('')
     bridge.startSpeech()
-  }, [listening, partial, bridge, sendText, copy])
+  }, [listening, bridge, sendText, copy, setPartialText])
+
+  const onVoiceToggle = useCallback((): void => {
+    const next = !voiceReplies
+    setVoiceReplies(next)
+    if (!next) {
+      bridge?.cancelReply?.()
+      setSpeaking(false)
+      setVoiceError('')
+    }
+  }, [voiceReplies, bridge])
 
   const onSend = useCallback((text: string): void => {
     if (text.trim() === '') return
@@ -288,12 +394,16 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
     listening,
     partial,
     error: speechError,
+    voiceError,
+    speaking,
+    voiceReplies,
     draft,
     onDraftChange: setDraft,
     onSend,
     onExpand,
     onCollapse,
     onMicToggle,
+    onVoiceToggle,
   }
   return mode === 'mini'
     ? createElement(PixiesMiniView, props)

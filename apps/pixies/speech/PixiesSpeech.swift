@@ -7,6 +7,10 @@
 //                          {"type":"ready"} {"type":"partial","text":..}
 //                          {"type":"final","text":..} {"type":"error","message":..}
 //                          Stop on stdin EOF or SIGTERM/SIGINT.
+//   speak <text> [--locale tag]
+//                          Speak one reply through AVSpeechSynthesizer and
+//                          stream {"type":"speaking"} {"type":"done"} (or
+//                          {"type":"error","message":..}). SIGTERM cancels.
 //
 // TCC note: build:speech embeds speech/Info.plist into this binary and ad-hoc
 // signs it, and the dev launcher starts the Electron shell through
@@ -211,6 +215,46 @@ func listen(locale: String) -> Never {
   dispatchMain()
 }
 
+/// One spoken reply. AVSpeechSynthesizer is asynchronous, so the CLI stays
+/// alive on dispatchMain() until the delegate reports a terminal utterance.
+// AVSpeechSynthesizer is not Sendable; the synthesizer is only touched on the
+// main queue (dispatchMain), so the unchecked conformance is accurate here.
+final class SpeechSpeaker: NSObject, @unchecked Sendable, AVSpeechSynthesizerDelegate {
+  private let synthesizer = AVSpeechSynthesizer()
+
+  func start(text: String, locale: String) {
+    let utterance = AVSpeechUtterance(string: text)
+    // A nil voice is fine: the system default speaks the text, and a missing
+    // locale-specific voice must not turn a successful reply into an error.
+    utterance.voice = AVSpeechSynthesisVoice(language: locale)
+    utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+    synthesizer.delegate = self
+    synthesizer.speak(utterance)
+    emit(["type": "speaking"])
+  }
+
+  func stop() {
+    synthesizer.stopSpeaking(at: .immediate)
+  }
+
+  func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+    emit(["type": "done"])
+    exit(0)
+  }
+
+  func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+    emit(["type": "cancelled"])
+    exit(0)
+  }
+}
+
+func speak(text: String, locale: String) -> Never {
+  let speaker = SpeechSpeaker()
+  installStopHandlers(onStop: { speaker.stop(); exit(0) })
+  speaker.start(text: text, locale: locale)
+  dispatchMain()
+}
+
 let arguments = CommandLine.arguments
 let subcommand = arguments.count > 1 ? arguments[1] : ""
 switch subcommand {
@@ -222,6 +266,15 @@ case "listen":
     locale = arguments[index + 1]
   }
   listen(locale: locale)
+case "speak":
+  guard arguments.count > 2, !arguments[2].isEmpty else {
+    emitError("usage: pixies-speech speak <text> [--locale zh-CN]")
+  }
+  var locale = ProcessInfo.processInfo.environment["DSH_PIXIES_SPEAK_LOCALE"] ?? "zh-CN"
+  if let index = arguments.firstIndex(of: "--locale"), index + 1 < arguments.count {
+    locale = arguments[index + 1]
+  }
+  speak(text: arguments[2], locale: locale)
 default:
-  emitError("usage: pixies-speech probe | pixies-speech listen [--locale zh-CN]")
+  emitError("usage: pixies-speech probe | pixies-speech listen [--locale zh-CN] | pixies-speech speak <text> [--locale zh-CN]")
 }

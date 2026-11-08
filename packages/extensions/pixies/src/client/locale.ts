@@ -41,6 +41,16 @@ export interface PixiesPanelMessages {
   readonly statusThinking?: string
   /** Status line while the microphone is live. */
   readonly statusListening?: string
+  /** Status line while a reply is being spoken. */
+  readonly statusSpeaking?: string
+  /** Mini avatar label while a voice-command shortcut round is live. */
+  readonly voiceCommandListening?: string
+  /** Speaker toggle label while voice replies are on. */
+  readonly voiceOn?: string
+  /** Speaker toggle label while voice replies are muted. */
+  readonly voiceOff?: string
+  /** Headline for a failed speech-synthesis round. */
+  readonly voiceFailed?: string
   /** Welcome headline shown for an empty conversation. */
   readonly welcome?: string
   /** Welcome hint shown for an empty conversation. */
@@ -76,11 +86,16 @@ export const defaultPixiesMessages: PixiesResolvedMessages = {
   statusIdle: '随时待命',
   statusThinking: '正在思考',
   statusListening: '正在聆听',
+  statusSpeaking: '正在播报',
+  voiceCommandListening: '正在接受语音指令',
+  voiceOn: '语音回复已开启',
+  voiceOff: '语音回复已关闭',
+  voiceFailed: '语音播报失败',
   welcome: '嘿，我是 Pixies！',
   empty: '在下面直接输入，或点麦克风说话。拖动顶部可以把我放到屏幕任何地方。',
   placeholder: '给 Pixies 发消息…',
   send: '发送',
-  sendHint: 'Enter 发送 · Shift+Enter 换行 · Esc 收起',
+  sendHint: 'Enter 发送 · Shift+Enter 换行 · Esc 收起 · ⌘⇧J 语音指令 · ⌘⇧K 展开对话',
   inputLabel: '消息输入框',
 }
 

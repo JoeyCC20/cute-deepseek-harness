@@ -178,6 +178,32 @@ export function PixiesPanel({ state, messages, showIdleCharacter = false, speech
   )
 }
 
+/**
+ * Animated halo drawn around the mini avatar while a voice-command round is
+ * live. SVG animation keeps the transparent Electron window stylesheet-free.
+ */
+export function PixiesListeningRing(): ReactElement {
+  return createElement('svg', {
+    width: '100%',
+    height: '100%',
+    viewBox: '0 0 112 112',
+    'aria-hidden': true,
+    'data-testid': 'pixies-listening-ring',
+    style: { position: 'absolute', inset: 0, pointerEvents: 'none' },
+  },
+  createElement('circle', {
+    cx: 56, cy: 56, r: 47, fill: 'none', stroke: '#ff4b52', strokeWidth: 2, opacity: 0.85,
+  },
+  createElement('animate', {
+    attributeName: 'r', values: '47;54;47', dur: '1.4s', repeatCount: 'indefinite',
+  }),
+  createElement('animate', {
+    attributeName: 'opacity', values: '0.85;0.12;0.85', dur: '1.4s', repeatCount: 'indefinite',
+  }),
+  ),
+  )
+}
+
 const CONTROL_BUTTON_STYLE: CSSProperties = {
   border: 'none',
   borderRadius: 999,
@@ -241,6 +267,59 @@ export function PixiesMicButton({ active, label, onClick, style }: {
       onClick,
     },
     createElement(ControlIcon, { path: 'mic' }),
+  )
+}
+
+/** Speaker icon: sound waves when voice replies are on, a cross when muted. */
+function VoiceIcon({ muted }: { muted: boolean }): ReactElement {
+  return createElement('svg',
+    {
+      width: 18,
+      height: 18,
+      viewBox: '0 0 24 24',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 2,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      'aria-hidden': true,
+    },
+    createElement('path', { d: 'M11 5 6 9H3v6h3l5 4V5Z' }),
+    createElement('path', { d: muted ? 'M17 9l5 6M22 9l-5 6' : 'M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13' }),
+  )
+}
+
+/**
+ * Voice-reply toggle; `active` means assistant replies are spoken, and
+ * `speaking` marks an utterance currently in flight.
+ * @param active - whether voice replies are enabled.
+ * @param speaking - whether a reply is being spoken right now.
+ * @param label - localized aria-label.
+ * @param onClick - click handler (toggle voice replies).
+ * @param style - caller-owned style overrides.
+ */
+export function PixiesVoiceButton({ active, speaking, label, onClick, style }: {
+  active: boolean
+  speaking: boolean
+  label: string
+  onClick: () => void
+  style?: CSSProperties
+}): ReactElement {
+  return createElement('button',
+    {
+      type: 'button',
+      'aria-label': label,
+      'data-testid': 'pixies-voice',
+      'data-muted': active ? undefined : '',
+      'data-speaking': speaking ? '' : undefined,
+      style: {
+        ...CONTROL_BUTTON_STYLE,
+        background: active ? (speaking ? '#c91520' : 'rgba(255,255,255,0.10)') : 'rgba(0,0,0,0.35)',
+        ...style,
+      },
+      onClick,
+    },
+    createElement(VoiceIcon, { muted: !active }),
   )
 }
 

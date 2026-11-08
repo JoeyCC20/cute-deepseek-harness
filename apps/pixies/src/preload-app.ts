@@ -1,4 +1,4 @@
-/** Minimal marker plus the Pixies renderer bridge (window/mode + speech + drag). */
+/** Minimal marker plus the Pixies renderer bridge (window/mode + speech in/out + shortcuts + drag). */
 
 import { contextBridge, ipcRenderer } from 'electron'
 
@@ -22,6 +22,10 @@ contextBridge.exposeInMainWorld('dshPixies', {
   getMode: (): Promise<unknown> => ipcRenderer.invoke('pixies:window:mode'),
   startSpeech: (): void => { void ipcRenderer.invoke('pixies:speech:start') },
   stopSpeech: (): void => { void ipcRenderer.invoke('pixies:speech:stop') },
+  /** Speak the newest assistant reply through the macOS speech helper. */
+  speakReply: (text: string): void => { void ipcRenderer.invoke('pixies:voice:speak', text) },
+  /** Stop any reply currently being spoken (mute or a new voice command). */
+  cancelReply: (): void => { void ipcRenderer.invoke('pixies:voice:cancel') },
   /**
    * Send one pointermove delta while the user drags the floating window.
    * The delta is screen-space: positive X moves the window right, positive
@@ -42,5 +46,16 @@ contextBridge.exposeInMainWorld('dshPixies', {
     const channel = (_event: Electron.IpcRendererEvent, mode: unknown): void => { listener(mode) }
     ipcRenderer.on('pixies:mode', channel)
     return () => { ipcRenderer.removeListener('pixies:mode', channel) }
+  },
+  onVoiceReply: (listener: (event: unknown) => void): (() => void) => {
+    const channel = (_event: Electron.IpcRendererEvent, payload: unknown): void => { listener(payload) }
+    ipcRenderer.on('pixies:voice', channel)
+    return () => { ipcRenderer.removeListener('pixies:voice', channel) }
+  },
+  /** The global voice-command shortcut's start/stop signal. */
+  onVoiceCommand: (listener: (event: unknown) => void): (() => void) => {
+    const channel = (_event: Electron.IpcRendererEvent, payload: unknown): void => { listener(payload) }
+    ipcRenderer.on('pixies:voice-command', channel)
+    return () => { ipcRenderer.removeListener('pixies:voice-command', channel) }
   },
 })

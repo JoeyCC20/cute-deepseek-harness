@@ -30,13 +30,17 @@ export {
   PixiesBubble,
   PixiesCharacter,
   PixiesCollapseButton,
+  PixiesListeningRing,
   PixiesMicButton,
   PixiesPanel,
+  PixiesVoiceButton,
 } from './character.tsx'
 export type { PixiesPanelMessages } from './character.tsx'
 export {
   defaultPixiesMessages,
   followPixiesSession,
+  isPixiesVoiceCommandEvent,
+  isPixiesVoiceReplyEvent,
   mountPixiesShell,
   pickPixiesSessionId,
   promptPixiesSession,
@@ -47,6 +51,8 @@ export type {
   PixiesShellBridge,
   PixiesShellMode,
   PixiesShellSpeechEvent,
+  PixiesShellVoiceCommandEvent,
+  PixiesShellVoiceEvent,
 } from './shell.tsx'
 export type { PixiesInteraction, PixiesMood, PixiesPresentation } from '../types.ts'
 

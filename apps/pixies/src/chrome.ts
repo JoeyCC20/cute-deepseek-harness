@@ -163,8 +163,10 @@ export function unionWorkArea(areas: readonly PixiesWorkArea[]): PixiesWorkArea 
 export interface PixiesChromeController {
   readonly window: PixiesWindowLike
   readonly tray: PixiesTrayLike
-  /** Whether the global shortcut registered successfully. */
+  /** Whether every global shortcut owned by this chrome registered successfully. */
   readonly shortcutRegistered: boolean
+  /** Register one extra global shortcut; disposal unregisters it with the others. */
+  readonly registerShortcut: (accelerator: string, callback: () => void) => boolean
   /** The current window mode. */
   readonly mode: PixiesWindowMode
   /** Switch between the mini peek avatar and the expanded panel. */
@@ -187,8 +189,9 @@ export interface PixiesChromeController {
 
 /**
  * Create the tray chrome: position the floating window at the top-right,
- * wire the tray click to toggle visibility, and register the global shortcut
- * to show the window. With `miniSize`, `setMode` swaps between the mini peek
+ * wire the tray click to toggle visibility, and register the show shortcut.
+ * Extra shortcuts added through `registerShortcut` share its disposal.
+ * With `miniSize`, `setMode` swaps between the mini peek
  * geometry and the expanded panel geometry; a mode change without a saved
  * position for the target mode grows/shrinks around the current window so the
  * avatar never jumps back to a corner the user dragged it away from.
@@ -239,7 +242,14 @@ export function createPixiesChrome(deps: PixiesChromeDeps, options: PixiesChrome
   const hide = (): void => { window.hide() }
   const toggle = (): void => { if (window.isVisible()) hide(); else show() }
   tray.on('click', toggle)
-  const shortcutRegistered = deps.registerShortcut(options.accelerator, show)
+  const accelerators = new Set<string>([options.accelerator])
+  let allShortcutsRegistered = deps.registerShortcut(options.accelerator, show)
+  const registerShortcut = (accelerator: string, callback: () => void): boolean => {
+    const registered = deps.registerShortcut(accelerator, callback)
+    accelerators.add(accelerator)
+    if (!registered) allShortcutsRegistered = false
+    return registered
+  }
   const dragBy = (deltaX: number, deltaY: number): void => {
     const bounds = window.getBounds()
     const area = dragArea()
@@ -275,13 +285,14 @@ export function createPixiesChrome(deps: PixiesChromeDeps, options: PixiesChrome
     applyMode(mode, true)
   }
   const dispose = (): void => {
-    deps.unregisterShortcut(options.accelerator)
+    for (const accelerator of accelerators) deps.unregisterShortcut(accelerator)
     tray.destroy()
   }
   return {
     window,
     tray,
-    shortcutRegistered,
+    get shortcutRegistered() { return allShortcutsRegistered },
+    registerShortcut,
     get mode() { return mode },
     setMode,
     show,

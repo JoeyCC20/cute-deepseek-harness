@@ -7,7 +7,13 @@
  */
 
 import { createElement, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type ReactElement } from 'react'
-import { PixiesCharacter, PixiesCollapseButton, PixiesMicButton } from './character.tsx'
+import {
+  PixiesCharacter,
+  PixiesCollapseButton,
+  PixiesListeningRing,
+  PixiesMicButton,
+  PixiesVoiceButton,
+} from './character.tsx'
 import type { PixiesResolvedMessages } from './locale.ts'
 import type { PixiesClientState, PixiesMessage, PixiesMessageRole } from './store.ts'
 import type { PixiesShellBridge, PixiesShellMode } from './shell.tsx'
@@ -21,12 +27,19 @@ export interface PixiesConversationProps {
   readonly listening: boolean
   readonly partial: string
   readonly error: string
+  /** A speech-output failure, shown apart from the conversation bubble. */
+  readonly voiceError: string
+  /** Whether a reply is currently being spoken. */
+  readonly speaking: boolean
+  /** Whether assistant replies are spoken aloud. */
+  readonly voiceReplies: boolean
   readonly draft: string
   readonly onDraftChange: (value: string) => void
   readonly onSend: (text: string) => void
   readonly onExpand: () => void
   readonly onCollapse: () => void
   readonly onMicToggle: () => void
+  readonly onVoiceToggle: () => void
 }
 
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
@@ -63,6 +76,28 @@ const MINI_BADGE: CSSProperties = {
   height: 11,
   borderRadius: '50%',
   border: '2px solid rgba(20,22,32,0.94)',
+}
+/** Distinct avatar styling while the shortcut is accepting a voice command. */
+const MINI_LISTENING_BUTTON: CSSProperties = {
+  border: '2px solid rgba(255,75,82,0.90)',
+  background: 'radial-gradient(circle at 34% 26%, rgba(255,120,120,0.38), rgba(48,16,22,0.96) 72%)',
+  boxShadow: '0 0 0 6px rgba(255,75,82,0.18), 0 16px 36px rgba(0,0,0,0.52), inset 0 1px 0 rgba(255,255,255,0.26)',
+}
+const MINI_VOICE_ERROR: CSSProperties = {
+  position: 'absolute',
+  bottom: 6,
+  left: 8,
+  width: 12,
+  height: 12,
+  borderRadius: '50%',
+  border: '2px solid rgba(20,22,32,0.94)',
+  background: '#ffa64d',
+}
+const VOICE_ERROR_HINT: CSSProperties = {
+  fontSize: 10.5,
+  color: '#ffd7a6',
+  textAlign: 'center',
+  overflowWrap: 'anywhere',
 }
 const EXPANDED_ROOT: CSSProperties = {
   position: 'fixed',
@@ -223,6 +258,7 @@ function liveBubble(props: PixiesConversationProps): LiveBubble | undefined {
 
 function statusOf(props: PixiesConversationProps): { readonly text: string; readonly color: string } {
   if (props.listening) return { text: props.copy.statusListening, color: '#ff4b52' }
+  if (props.speaking) return { text: props.copy.statusSpeaking, color: '#ffc247' }
   if (props.state.pendingSession !== undefined) return { text: props.copy.statusThinking, color: '#5aa9ff' }
   return { text: props.copy.statusIdle, color: '#4ade80' }
 }
@@ -235,35 +271,52 @@ function statusOf(props: PixiesConversationProps): { readonly text: string; read
 export function PixiesMiniView(props: PixiesConversationProps): ReactElement {
   const drag = usePixiesWindowDrag(props.bridge)
   const [hovered, setHovered] = useState(false)
-  const mood = props.state.pendingSession !== undefined
-    ? 'thinking'
-    : props.state.interaction !== undefined ? 'asking' : 'neutral'
-  const badgeColor = props.state.pendingSession !== undefined
-    ? '#5aa9ff'
-    : props.state.messages.length > 0 ? '#ff4b52' : '#4ade80'
+  const accepting = props.listening
+  const mood = accepting || props.state.interaction !== undefined
+    ? 'asking'
+    : props.state.pendingSession !== undefined ? 'thinking' : 'neutral'
+  const badgeColor = accepting
+    ? '#ff4b52'
+    : props.speaking
+      ? '#ffc247'
+      : props.state.pendingSession !== undefined
+        ? '#5aa9ff'
+        : props.state.messages.length > 0 ? '#ff4b52' : '#4ade80'
   return createElement('div', {
     'data-pixies-shell': '',
     'data-mode': 'mini' as PixiesShellMode,
+    'data-listening': accepting ? '' : undefined,
+    'data-speaking': props.speaking ? '' : undefined,
     ...drag.containerProps,
     style: { ...MINI_ROOT, ...drag.containerProps.style },
   },
   createElement('button', {
     type: 'button',
     'data-testid': 'pixies-mini',
-    'aria-label': props.copy.expand,
+    'data-listening': accepting ? '' : undefined,
+    'aria-label': accepting ? props.copy.voiceCommandListening : props.copy.expand,
     style: {
       ...MINI_BUTTON,
-      transform: hovered ? 'scale(1.06)' : 'scale(1)',
-      boxShadow: hovered
-        ? '0 16px 36px rgba(0,0,0,0.52), inset 0 1px 0 rgba(255,255,255,0.26)'
-        : MINI_BUTTON.boxShadow,
+      ...(accepting ? MINI_LISTENING_BUTTON : {}),
+      transform: hovered || accepting ? 'scale(1.06)' : 'scale(1)',
+      boxShadow: accepting
+        ? MINI_LISTENING_BUTTON.boxShadow
+        : hovered
+          ? '0 16px 36px rgba(0,0,0,0.52), inset 0 1px 0 rgba(255,255,255,0.26)'
+          : MINI_BUTTON.boxShadow,
     },
     onPointerEnter: () => { setHovered(true) },
     onPointerLeave: () => { setHovered(false) },
     onClick: props.onExpand,
   },
   createElement(PixiesCharacter, { size: 78, mood, glow: true }),
+  accepting ? createElement(PixiesListeningRing) : null,
   createElement('span', { style: { ...MINI_BADGE, background: badgeColor } }),
+  props.voiceError !== '' ? createElement('span', {
+    'data-testid': 'pixies-voice-error',
+    'aria-label': props.voiceError,
+    style: MINI_VOICE_ERROR,
+  }) : null,
   ),
   )
 }
@@ -326,7 +379,10 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
       ...drag.containerProps,
       style: { ...HEADER, ...drag.containerProps.style },
     },
-    createElement(PixiesCharacter, { size: 36, mood: props.state.pendingSession !== undefined ? 'thinking' : 'neutral' }),
+    createElement(PixiesCharacter, {
+      size: 36,
+      mood: props.listening ? 'asking' : props.state.pendingSession !== undefined ? 'thinking' : 'neutral',
+    }),
     createElement('div', { style: { flex: 1, minWidth: 0 } },
       createElement('div', { style: TITLE }, props.copy.title),
       createElement('div', { style: SUBTITLE },
@@ -336,6 +392,13 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
         props.copy.subtitle,
       ),
     ),
+    createElement(PixiesVoiceButton, {
+      active: props.voiceReplies,
+      speaking: props.speaking,
+      label: props.voiceReplies ? props.copy.voiceOn : props.copy.voiceOff,
+      style: HEADER_BUTTON,
+      onClick: props.onVoiceToggle,
+    }),
     createElement(PixiesCollapseButton, {
       label: props.copy.collapse,
       style: HEADER_BUTTON,
@@ -404,6 +467,10 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
         ),
       ),
       createElement('div', { style: HINT }, props.copy.sendHint),
+      props.voiceError !== '' ? createElement('div', {
+        'data-testid': 'pixies-voice-error',
+        style: VOICE_ERROR_HINT,
+      }, props.voiceError) : null,
     ),
   ),
   )

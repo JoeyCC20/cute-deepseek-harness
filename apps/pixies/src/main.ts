@@ -1,4 +1,4 @@
-/** Pixies tray shell: menu-bar entry, global shortcut, and a frameless top-right window over the dsh backend. */
+/** Pixies tray shell: menu-bar entry, global shortcuts, and a frameless top-right window over the dsh backend. */
 
 import { createRequire } from 'node:module'
 
@@ -43,6 +43,7 @@ import { spiderMaskIcon } from './icon.ts'
 import { composePixiesDeployStamp, readPixiesBuildStamp } from './project-stamp.ts'
 import { claimPixiesSingleInstance } from './single-instance.ts'
 import { parseProbeOutput, PixiesSpeechController, type PixiesSpeechEvent } from './speech.ts'
+import { PixiesVoiceController, type PixiesVoiceEvent } from './voice.ts'
 
 const SCHEME = 'dsh-app'
 const WINDOW_SIZE = { width: 420, height: 640 }
@@ -50,6 +51,10 @@ const MINI_SIZE = { width: 112, height: 112 }
 const SCREEN_MARGIN = 12
 const MINI_MARGIN = 8
 const SHORTCUT = 'CommandOrControl+Shift+P'
+/** Start/stop one voice-command round without clicking the avatar. */
+const VOICE_COMMAND_SHORTCUT = 'CommandOrControl+Shift+J'
+/** Open the conversation panel from anywhere. */
+const EXPAND_SHORTCUT = 'CommandOrControl+Shift+K'
 const TOOLTIP = 'Pixies · 蜘蛛侠'
 const PLACEMENT_FILE = 'pixies-window.json'
 
@@ -387,7 +392,10 @@ async function runPixiesStages(
         && typeof window.dshPixies.expand === 'function'
         && typeof window.dshPixies.collapse === 'function'
         && typeof window.dshPixies.startSpeech === 'function'
-        && typeof window.dshPixies.stopSpeech === 'function',
+        && typeof window.dshPixies.stopSpeech === 'function'
+        && typeof window.dshPixies.speakReply === 'function'
+        && typeof window.dshPixies.onVoiceCommand === 'function'
+        && typeof window.dshPixies.onVoiceReply === 'function',
     })`).catch(() => ({}))
     if (page.overlay === true) break
     await sleep(500)
@@ -670,7 +678,12 @@ async function main(): Promise<void> {
     pixiesWindow?.webContents.send('pixies:speech', event)
   }
   const speech = new PixiesSpeechController({ binary: speechBinary(), onEvent: notifySpeech })
-  ipcMain.handle('pixies:speech:start', async () => {
+  const notifyVoice = (event: PixiesVoiceEvent): void => {
+    if (event.type === 'error') console.warn(`[pixies] voice reply failed: ${event.message}`)
+    pixiesWindow?.webContents.send('pixies:voice', event)
+  }
+  const voice = new PixiesVoiceController({ binary: speechBinary(), onEvent: notifyVoice })
+  const startSpeech = async (): Promise<void> => {
     // The headless Swift helper cannot present a microphone prompt; ask from
     // the windowed main process first so TCC can attach the dialog to Pixies.
     if (process.platform === 'darwin' && !(await systemPreferences.askForMediaAccess('microphone'))) {
@@ -678,8 +691,15 @@ async function main(): Promise<void> {
       return
     }
     speech.start()
-  })
+  }
+  ipcMain.handle('pixies:speech:start', startSpeech)
   ipcMain.handle('pixies:speech:stop', () => { speech.stop() })
+  // The renderer asks the main process to speak the newest assistant reply.
+  // Text crosses an IPC boundary, so a non-string payload is dropped here.
+  ipcMain.handle('pixies:voice:speak', (_event, text: unknown) => {
+    if (typeof text === 'string') voice.speak(text)
+  })
+  ipcMain.handle('pixies:voice:cancel', () => { voice.cancel() })
   // Renderer drags send screen-space deltas; the controller clamps them
   // against the union of all displays before moving the window. The same delta
   // is also forwarded as a single `ipcMain.on` because there is no return
@@ -700,6 +720,37 @@ async function main(): Promise<void> {
       console.error(`[pixies] dragBy failed at (${String(deltaX)}, ${String(deltaY)}):`, error)
     }
   })
+  /**
+   * Cmd/Ctrl+Shift+J: one press opens a voice-command round. Feedback is sent
+   * before the microphone permission check (which can wait on a TCC dialog),
+   * so the avatar reacts on the keystroke itself. A second press ends the
+   * round and delivers whatever the recognizer already transcribed.
+   */
+  const beginVoiceCommand = (): void => {
+    chrome.show()
+    voice.cancel()
+    if (speech.active) {
+      speech.stop()
+      pixiesWindow?.webContents.send('pixies:voice-command', { type: 'stop' })
+      return
+    }
+    pixiesWindow?.webContents.send('pixies:voice-command', { type: 'start' })
+    void startSpeech()
+  }
+  /** Cmd/Ctrl+Shift+K: show the window and open the conversation panel. */
+  const expandConversation = (): void => {
+    chrome.setMode('expanded')
+    notifyMode('expanded')
+    chrome.show()
+  }
+  for (const [accelerator, callback] of [
+    [VOICE_COMMAND_SHORTCUT, beginVoiceCommand],
+    [EXPAND_SHORTCUT, expandConversation],
+  ] as const) {
+    if (!chrome.registerShortcut(accelerator, callback)) {
+      console.warn(`[pixies] global shortcut ${accelerator} could not be registered (already in use)`)
+    }
+  }
   await chrome.window.loadURL(`${SCHEME}://app/index.html`)
   // The avatar is the product: show it as soon as the page is ready instead of
   // waiting for a tray click that the user has no reason to make on launch.
@@ -709,6 +760,7 @@ async function main(): Promise<void> {
     quitting = true
     chrome.dispose()
     speech.dispose()
+    voice.dispose()
     await host.stop().catch(() => undefined)
     host = undefined
     app.exit(0)
@@ -729,6 +781,7 @@ async function main(): Promise<void> {
     event.preventDefault()
     chrome.dispose()
     speech.dispose()
+    voice.dispose()
     const active = host
     host = undefined
     void active?.stop().finally(() => { app.quit() })
