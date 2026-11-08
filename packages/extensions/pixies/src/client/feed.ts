@@ -23,6 +23,60 @@ export interface AssistantMessageEventData {
   readonly message: { readonly content?: readonly unknown[] }
 }
 
+/** Structural view of a stream chunk or a durable reasoning content block. */
+interface TextBlockLike {
+  readonly type?: unknown
+  readonly text?: unknown
+}
+
+/**
+ * Read one live reasoning increment. The chunk is a wire payload, so its
+ * fields are narrowed structurally rather than trusted as a typed boundary.
+ * @param data - an `assistant/live-chunk` event body.
+ * @returns the delta text, or undefined for any other chunk kind.
+ */
+function reasoningDelta(data: unknown): string | undefined {
+  if (typeof data !== 'object' || data === null) return undefined
+  const chunk: unknown = Reflect.get(data, 'chunk')
+  if (typeof chunk !== 'object' || chunk === null) return undefined
+  const candidate = chunk as TextBlockLike
+  if (candidate.type !== 'reasoning-delta' || typeof candidate.text !== 'string') return undefined
+  return candidate.text === '' ? undefined : candidate.text
+}
+
+/**
+ * Whether a wire payload carries the message body the speech fold requires.
+ * The feed sits on a wire boundary, so a truncated payload is skipped rather
+ * than letting the projection read `message.content` off a missing object.
+ * @param data - an `assistant/message` event body.
+ * @returns true when `message` is an object.
+ */
+function isAssistantMessageBody(data: unknown): boolean {
+  if (typeof data !== 'object' || data === null) return false
+  const message: unknown = Reflect.get(data, 'message')
+  return typeof message === 'object' && message !== null
+}
+
+/**
+ * Read the settled reasoning of an assistant message. Recorded-session replay
+ * has no client-only live chunks, so the durable content is the only source.
+ * @param content - the model-facing content blocks of the message.
+ * @returns the joined reasoning text, or undefined when the turn had none.
+ */
+function reasoningText(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined
+  let text = ''
+  for (const block of content as readonly unknown[]) {
+    if (typeof block !== 'object' || block === null) continue
+    const candidate = block as TextBlockLike
+    if (candidate.type !== 'reasoning' || typeof candidate.text !== 'string') continue
+    const trimmed = candidate.text.trim()
+    if (trimmed === '') continue
+    text = text === '' ? trimmed : `${text}\n${trimmed}`
+  }
+  return text === '' ? undefined : text
+}
+
 /**
  * Read a failed turn's reason from the wire payload. A turn that ends with an
  * error (no API key, provider failure, transport error) produces no
@@ -42,8 +96,9 @@ function turnFailure(event: SessionEventLike): string | undefined {
 
 /**
  * Feed one session event into the store: assistant/message becomes the
- * character's speech; turn/start begins a thinking round, turn/end (or a
- * follow-up assistant/message) ends it. Thinking is the gap between the user
+ * character's speech; assistant/live-chunk reasoning deltas stream into the
+ * collapsible thinking block; turn/start begins a thinking round, turn/end (or
+ * a follow-up assistant/message) ends it. Thinking is the gap between the user
  * sending a prompt and the LLM producing its first visible reply — without
  * an explicit signal the bubble looks frozen during a multi-second call.
  * @param store - the Pixies store to publish into.
@@ -61,8 +116,22 @@ export function feedSessionEvent(store: PixiesStore, sessionId: string, event: S
     if (failure !== undefined) store.appendMessage({ role: 'system', text: failure, mood: 'asking' })
     return
   }
+  if (event.type === 'assistant/live-chunk') {
+    const delta = reasoningDelta(event.data)
+    if (delta !== undefined) store.appendThinking(sessionId, delta)
+    return
+  }
   if (event.type !== 'assistant/message') return
-  const presentation = presentationFromAssistantMessage(sessionId, event.seq, event.data as AssistantMessageEventData)
+  if (!isAssistantMessageBody(event.data)) return
+  const body = event.data as AssistantMessageEventData
+  const rawContent: unknown = body.message.content
+  store.settleThinking(sessionId, reasoningText(rawContent))
+  const content = Array.isArray(rawContent) ? rawContent as readonly unknown[] : []
+  const presentation = presentationFromAssistantMessage(sessionId, event.seq, {
+    turn: body.turn,
+    step: body.step,
+    message: { content },
+  })
   if (presentation !== null) {
     store.speak(presentation)
     store.endThinking(sessionId)

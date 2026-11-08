@@ -38,6 +38,14 @@ already present in the environment. `DEEPSEEK_API_KEY` is required for replies.
 - The expanded panel is a conversation: a scrollable history of user/assistant/system messages, a
   text composer (`Enter` sends, `Shift+Enter` inserts a newline), and the mic button. Thinking,
   listening, speech errors, and failed turns all have visible states — a failed turn is never silent.
+- Live reasoning streams into a thinking disclosure under the transcript. The block is collapsed by
+  default, expands on click, and keeps streaming while open; a recorded-session replay reconstructs
+  the same text from the durable reasoning blocks when client-only live chunks are absent.
+- The header's clock button stows a history drawer: sessions grouped by today's morning, today's
+  afternoon, and earlier days, with the followed session marked, plus a preview of the visible
+  conversation context. Selecting a row switches the session the character follows and prompts; the
+  preference stays local to Pixies because the host catalog does not project a current selection.
+  The drawer is collapsed by default.
 - Both text prompts and final speech transcripts are queued into the followed session through
   `promptPixiesSession`; assistant replies stream back into the history. The window mode is owned by
   the main process and reconciled by the renderer on mount.
@@ -83,10 +91,12 @@ already present in the environment. `DEEPSEEK_API_KEY` is required for replies.
 - `tests/` — unit tests for the chrome facade, forwarder, icons, keychain, and speech controller.
 
 The React surfaces live in the sibling additive plugin `packages/extensions/pixies/src/client`:
-`conversation.tsx` (avatar + expanded panel), `character.tsx` (illustrated SVG mask, listening and
+`conversation.tsx` (avatar, expanded panel, collapsible reasoning and history surfaces),
+`character.tsx` (illustrated SVG mask, listening and
 thinking rings, voice-reply toggle),
-`window-drag.ts` (thresholded pointer drag), `store.ts` (conversation history), `feed.ts`
-(session events), `shell.tsx` (mount + input routing), and `locale.ts` (locale-owned copy).
+`window-drag.ts` (thresholded pointer drag), `store.ts` (conversation history and reasoning stream),
+`feed.ts` (session events and live chunks), `shell.tsx` (mount + input routing + session selection),
+and `locale.ts` (locale-owned copy).
 
 ## Known Limitations and Deferred Work
 

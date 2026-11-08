@@ -28,6 +28,18 @@ export interface PixiesMessageDraft {
 
 /** Cap the in-window history: a desktop companion can stay open for days. */
 const MAX_MESSAGES = 200
+/** Cap a reasoning stream so a runaway turn cannot grow the window forever. */
+const MAX_THINKING_CHARS = 12_000
+
+/** The reasoning stream of the most recent turn, kept after it settles. */
+export interface PixiesThinking {
+  /** Session that produced the stream; a rebind starts a different round. */
+  readonly sessionId: string
+  /** Incremental reasoning text, oldest first. */
+  readonly text: string
+  /** Whether live deltas are still arriving. */
+  readonly active: boolean
+}
 
 /** One immutable snapshot of the character's display state. */
 export interface PixiesClientState {
@@ -40,6 +52,8 @@ export interface PixiesClientState {
    * Drives the thinking bubble between user/message and assistant/message.
    */
   readonly pendingSession: string | undefined
+  /** Reasoning stream of the latest turn, or undefined before any arrives. */
+  readonly thinking: PixiesThinking | undefined
   /** Visible conversation history, oldest first. */
   readonly messages: readonly PixiesMessage[]
 }
@@ -61,6 +75,10 @@ export interface PixiesStore {
   readonly beginThinking: (sessionId: string) => void
   /** Clear the pending-turn marker; safe to call with no marker set. */
   readonly endThinking: (sessionId: string) => void
+  /** Append one live reasoning delta to the active round. */
+  readonly appendThinking: (sessionId: string, delta: string) => void
+  /** Close the round, replacing the live text with the durable reasoning when available. */
+  readonly settleThinking: (sessionId: string, reasoning: string | undefined) => void
   /** Reset every field and notify listeners. */
   readonly clear: () => void
 }
@@ -73,12 +91,16 @@ export function createPixiesStore(): PixiesStore {
   let latest: PixiesPresentation | undefined
   let interaction: PixiesInteraction | undefined
   let pendingSession: string | undefined
+  let thinking: PixiesThinking | undefined
   let messages: readonly PixiesMessage[] = []
   let sequence = 0
   const listeners = new Set<PixiesListener>()
   const emit = (): void => {
-    const state: PixiesClientState = { latest, interaction, pendingSession, messages }
+    const state: PixiesClientState = { latest, interaction, pendingSession, thinking, messages }
     for (const listener of listeners) listener(state)
+  }
+  const finishThinking = (sessionId: string): void => {
+    if (thinking?.sessionId === sessionId && thinking.active) thinking = { ...thinking, active: false }
   }
   const append = (draft: PixiesMessageDraft, id: string): void => {
     if (draft.text === '') return
@@ -93,7 +115,7 @@ export function createPixiesStore(): PixiesStore {
     messages = [...messages, message].slice(-MAX_MESSAGES)
   }
   return {
-    getState: () => ({ latest, interaction, pendingSession, messages }),
+    getState: () => ({ latest, interaction, pendingSession, thinking, messages }),
     subscribe: (listener) => {
       listeners.add(listener)
       return () => { listeners.delete(listener) }
@@ -104,16 +126,22 @@ export function createPixiesStore(): PixiesStore {
       // turn/end event is late or never arrives (a dropped event must not
       // leave "thinking" covering the answer forever).
       if (pendingSession === presentation.sessionId) pendingSession = undefined
+      finishThinking(presentation.sessionId)
       append({ role: 'assistant', text: presentation.text, mood: presentation.mood }, presentation.id)
       emit()
     },
     appendMessage: (draft) => {
+      // A user prompt starts a new round, so the previous turn's reasoning is
+      // no longer the one the disclosure should show.
+      if (draft.role === 'user') thinking = undefined
       append(draft, `local-${String(sequence + 1)}`)
       emit()
     },
     setInteraction: (next) => { interaction = next; emit() },
     beginThinking: (sessionId) => {
-      if (pendingSession === sessionId) return
+      const stale = thinking !== undefined && !thinking.active
+      if (stale) thinking = undefined
+      if (pendingSession === sessionId && !stale) return
       pendingSession = sessionId
       emit()
     },
@@ -123,12 +151,34 @@ export function createPixiesStore(): PixiesStore {
       if (pendingSession !== undefined && pendingSession !== sessionId) return
       if (pendingSession === undefined) return
       pendingSession = undefined
+      finishThinking(sessionId)
+      emit()
+    },
+    appendThinking: (sessionId, delta) => {
+      if (delta === '') return
+      if (thinking === undefined || thinking.sessionId !== sessionId || !thinking.active) {
+        thinking = { sessionId, text: delta.slice(-MAX_THINKING_CHARS), active: true }
+      } else {
+        thinking = { ...thinking, text: `${thinking.text}${delta}`.slice(-MAX_THINKING_CHARS) }
+      }
+      emit()
+    },
+    settleThinking: (sessionId, reasoning) => {
+      if (thinking === undefined) {
+        if (reasoning === undefined || reasoning === '') return
+        thinking = { sessionId, text: reasoning.slice(-MAX_THINKING_CHARS), active: false }
+      } else if (thinking.sessionId === sessionId) {
+        const text = reasoning === undefined || reasoning === '' ? thinking.text : reasoning
+        if (!thinking.active && text === thinking.text) return
+        thinking = { sessionId, text: text.slice(-MAX_THINKING_CHARS), active: false }
+      } else return
       emit()
     },
     clear: () => {
       latest = undefined
       interaction = undefined
       pendingSession = undefined
+      thinking = undefined
       messages = []
       emit()
     },

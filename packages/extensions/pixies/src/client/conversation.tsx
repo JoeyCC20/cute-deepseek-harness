@@ -7,6 +7,8 @@
  */
 
 import { createElement, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type ReactElement } from 'react'
+import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import {
   PixiesCharacter,
   PixiesCollapseButton,
@@ -16,7 +18,7 @@ import {
   PixiesVoiceButton,
 } from './character.tsx'
 import type { PixiesResolvedMessages } from './locale.ts'
-import type { PixiesClientState, PixiesMessage, PixiesMessageRole } from './store.ts'
+import type { PixiesClientState, PixiesMessage, PixiesMessageRole, PixiesThinking } from './store.ts'
 import type { PixiesShellBridge, PixiesShellMode } from './shell.tsx'
 import { usePixiesWindowDrag } from './window-drag.ts'
 
@@ -43,6 +45,12 @@ export interface PixiesConversationProps {
   readonly onCollapse: () => void
   readonly onMicToggle: () => void
   readonly onVoiceToggle: () => void
+  /** Host session catalog, absent on plain web pages without a sessions face. */
+  readonly sessionList: SessionListState | undefined
+  /** The session the character currently follows. */
+  readonly selectedSessionId: SessionId | undefined
+  /** Switch the followed session from the history drawer. */
+  readonly onSelectSession: (id: SessionId) => void
 }
 
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
@@ -223,6 +231,101 @@ const SEND_BUTTON: CSSProperties = {
   background: 'linear-gradient(140deg, #ff4b52, #c91520)',
   boxShadow: '0 4px 14px rgba(216,30,39,0.38)',
 }
+const HISTORY_BUTTON: CSSProperties = {
+  ...HEADER_BUTTON,
+  border: 'none',
+  borderRadius: 10,
+  cursor: 'pointer',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+}
+const DRAWER: CSSProperties = {
+  flexShrink: 0,
+  maxHeight: '46%',
+  overflowY: 'auto',
+  padding: '10px 12px 12px',
+  borderBottom: '1px solid rgba(255,255,255,0.08)',
+  background: 'rgba(8,10,18,0.52)',
+  scrollbarWidth: 'thin',
+}
+const DRAWER_HEAD: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 }
+const SECTION: CSSProperties = { fontSize: 10.5, opacity: 0.52, margin: '11px 2px 5px', letterSpacing: 0.4 }
+const SESSION_ROW: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  width: '100%',
+  boxSizing: 'border-box',
+  marginBottom: 4,
+  padding: '7px 9px',
+  borderRadius: 10,
+  border: '1px solid transparent',
+  background: 'rgba(255,255,255,0.05)',
+  color: '#f4f5fa',
+  cursor: 'pointer',
+  textAlign: 'left',
+  fontFamily: 'inherit',
+  fontSize: 12,
+}
+const SESSION_ROW_ACTIVE: CSSProperties = {
+  border: '1px solid rgba(90,169,255,0.55)',
+  background: 'rgba(90,169,255,0.14)',
+}
+const SESSION_TITLE: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+const SESSION_META: CSSProperties = { flexShrink: 0, fontSize: 10, opacity: 0.52 }
+const RUNNING_DOT: CSSProperties = { flexShrink: 0, width: 6, height: 6, borderRadius: '50%', background: '#4ade80' }
+const DRAWER_NOTE: CSSProperties = { fontSize: 11.5, opacity: 0.5, padding: '3px 2px' }
+const CONTEXT_ROW: CSSProperties = {
+  fontSize: 11.5,
+  opacity: 0.72,
+  padding: '3px 2px',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+const THINKING: CSSProperties = {
+  alignSelf: 'flex-start',
+  maxWidth: '88%',
+  borderRadius: 12,
+  border: '1px solid rgba(90,169,255,0.28)',
+  background: 'rgba(90,169,255,0.08)',
+  overflow: 'hidden',
+}
+const THINKING_TOGGLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: '7px 10px',
+  border: 'none',
+  background: 'transparent',
+  color: '#cfe4ff',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  fontSize: 11.5,
+  textAlign: 'left',
+}
+const THINKING_STATE: CSSProperties = { flexShrink: 0, marginLeft: 'auto', fontSize: 10, opacity: 0.65 }
+const THINKING_BODY: CSSProperties = {
+  margin: 0,
+  padding: '0 10px 9px',
+  maxHeight: 180,
+  overflowY: 'auto',
+  fontSize: 11.5,
+  lineHeight: 1.6,
+  whiteSpace: 'pre-wrap',
+  overflowWrap: 'anywhere',
+  color: 'rgba(233,241,255,0.82)',
+  fontFamily: 'inherit',
+}
 
 function rowStyle(role: PixiesMessageRole): CSSProperties {
   return { display: 'flex', justifyContent: role === 'user' ? 'flex-end' : 'flex-start' }
@@ -358,6 +461,148 @@ function MessageRow({ message, marker }: { message: PixiesMessage; marker: boole
   )
 }
 
+/** The drawer's coarse time buckets for the host session catalog. */
+type SessionGroup = 'morning' | 'afternoon' | 'earlier'
+
+/** Bucket one session by its last update in the viewer's local time. */
+function groupOf(updatedAt: number, now: number): SessionGroup {
+  const updated = new Date(updatedAt)
+  if (updated.toDateString() !== new Date(now).toDateString()) return 'earlier'
+  return updated.getHours() < 12 ? 'morning' : 'afternoon'
+}
+
+/** Read catalog rows in host order; a missing `byId` entry is skipped. */
+function sessionRows(list: SessionListState | undefined, now: number): readonly {
+  readonly group: SessionGroup
+  readonly summary: SessionSummary
+}[] {
+  if (list === undefined) return []
+  const rows: Array<{ readonly group: SessionGroup; readonly summary: SessionSummary }> = []
+  for (const id of list.ids) {
+    const summary: SessionSummary | undefined = list.byId[id]
+    if (summary !== undefined) rows.push({ group: groupOf(summary.updatedAt, now), summary })
+  }
+  return rows
+}
+
+function roleName(role: PixiesMessageRole, copy: PixiesResolvedMessages): string {
+  if (role === 'user') return copy.roleUser
+  if (role === 'assistant') return copy.roleAssistant
+  return copy.roleSystem
+}
+
+/** Clock glyph for the history entry; the accessible name comes from copy. */
+function historyIcon(): ReactElement {
+  return createElement('svg', {
+    width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+    strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+  },
+  createElement('circle', { cx: 12, cy: 12, r: 9 }),
+  createElement('path', { d: 'M12 7v5l3 2' }),
+  )
+}
+
+interface HistoryDrawerProps {
+  readonly copy: PixiesResolvedMessages
+  readonly list: SessionListState | undefined
+  readonly selectedId: SessionId | undefined
+  readonly messages: readonly PixiesMessage[]
+  readonly onSelect: (id: SessionId) => void
+  readonly onClose: () => void
+}
+
+/**
+ * The collapsible history surface: sessions grouped by morning/afternoon/older,
+ * plus a preview of the visible conversation context. Both are read-only data
+ * projections; selecting a row is the only mutation, owned by the shell.
+ */
+function HistoryDrawer(props: HistoryDrawerProps): ReactElement {
+  const rows = sessionRows(props.list, Date.now())
+  const groups: readonly { readonly key: SessionGroup; readonly heading: string }[] = [
+    { key: 'morning', heading: props.copy.groupMorning },
+    { key: 'afternoon', heading: props.copy.groupAfternoon },
+    { key: 'earlier', heading: props.copy.groupEarlier },
+  ]
+  return createElement('div', { 'data-testid': 'pixies-history-panel', style: DRAWER },
+    createElement('div', { style: DRAWER_HEAD },
+      createElement('div', { style: { ...TITLE, flex: 1 } }, props.copy.history),
+      createElement('button', {
+        type: 'button',
+        'data-testid': 'pixies-history-close',
+        'aria-label': props.copy.historyClose,
+        style: HISTORY_BUTTON,
+        onClick: props.onClose,
+      }, historyIcon()),
+    ),
+    createElement('div', { style: SECTION }, props.copy.sessions),
+    rows.length === 0 ? createElement('div', { style: DRAWER_NOTE }, props.copy.noSessions) : null,
+    ...groups.map((group) => {
+      const members = rows.filter(row => row.group === group.key)
+      if (members.length === 0) return null
+      return createElement('div', { key: group.key },
+        createElement('div', { style: SECTION }, group.heading),
+        ...members.map(({ summary }) => {
+          const active = summary.id === props.selectedId
+          return createElement('button', {
+            key: summary.id,
+            type: 'button',
+            'data-testid': 'pixies-session-row',
+            'data-active': active ? '' : undefined,
+            'aria-current': active ? 'true' : undefined,
+            'aria-label': summary.displayTitle,
+            style: { ...SESSION_ROW, ...(active ? SESSION_ROW_ACTIVE : {}) },
+            onClick: () => { props.onSelect(summary.id) },
+          },
+          summary.running ? createElement('span', { style: RUNNING_DOT }) : null,
+          createElement('span', { style: SESSION_TITLE }, summary.displayTitle),
+          createElement('span', { style: SESSION_META }, new Date(summary.updatedAt).toLocaleTimeString()),
+          )
+        }),
+      )
+    }),
+    createElement('div', { style: SECTION }, props.copy.context),
+    createElement('div', { style: DRAWER_NOTE }, `${String(props.messages.length)} ${props.copy.contextCount}`),
+    ...props.messages.slice(-3).map(message => createElement('div', {
+      key: message.id,
+      'data-testid': 'pixies-context-row',
+      style: CONTEXT_ROW,
+    }, `${roleName(message.role, props.copy)}: ${message.text}`)),
+  )
+}
+
+interface ThinkingDisclosureProps {
+  readonly thinking: PixiesThinking
+  readonly copy: PixiesResolvedMessages
+  readonly open: boolean
+  readonly onToggle: () => void
+}
+
+/** One collapsed-by-default reasoning block; the text keeps streaming while open. */
+function ThinkingDisclosure(props: ThinkingDisclosureProps): ReactElement {
+  return createElement('div', {
+    'data-testid': 'pixies-thinking',
+    'data-streaming': props.thinking.active ? '' : undefined,
+    style: THINKING,
+  },
+  createElement('button', {
+    type: 'button',
+    'data-testid': 'pixies-thinking-toggle',
+    'aria-expanded': props.open,
+    'aria-label': props.open ? props.copy.hideThinking : props.copy.showThinking,
+    style: THINKING_TOGGLE,
+    onClick: props.onToggle,
+  },
+  createElement('span', null, props.copy.thinkingProcess),
+  createElement('span', { style: THINKING_STATE },
+    props.thinking.active ? props.copy.thinkingStreaming : props.copy.thinkingDone),
+  ),
+  props.open ? createElement('pre', {
+    'data-testid': 'pixies-thinking-body',
+    style: THINKING_BODY,
+  }, props.thinking.text) : null,
+  )
+}
+
 /**
  * Expanded mode: a draggable header, a scrollable conversation, and a composer
  * with text and voice input. Enter sends, Shift+Enter inserts a newline, and
@@ -367,6 +612,8 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
   const drag = usePixiesWindowDrag(props.bridge)
   const listRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [thinkingOpen, setThinkingOpen] = useState(false)
   const live = liveBubble(props)
   const status = statusOf(props)
   const messages = props.state.messages
@@ -378,7 +625,7 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
   useEffect(() => {
     const node = listRef.current
     if (node !== null) node.scrollTop = node.scrollHeight
-  }, [messages.length, live?.text])
+  }, [messages.length, live?.text, thinkingOpen ? props.state.thinking?.text : undefined])
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent): void => {
       if (event.key === 'Escape') props.onCollapse()
@@ -424,12 +671,29 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
       style: HEADER_BUTTON,
       onClick: props.onVoiceToggle,
     }),
+    createElement('button', {
+      type: 'button',
+      'data-testid': 'pixies-history-toggle',
+      'data-open': historyOpen ? '' : undefined,
+      'aria-expanded': historyOpen,
+      'aria-label': historyOpen ? props.copy.historyClose : props.copy.historyOpen,
+      style: HISTORY_BUTTON,
+      onClick: () => { setHistoryOpen(!historyOpen) },
+    }, historyIcon()),
     createElement(PixiesCollapseButton, {
       label: props.copy.collapse,
       style: HEADER_BUTTON,
       onClick: props.onCollapse,
     }),
     ),
+    historyOpen ? createElement(HistoryDrawer, {
+      copy: props.copy,
+      list: props.sessionList,
+      selectedId: props.selectedSessionId,
+      messages,
+      onSelect: props.onSelectSession,
+      onClose: () => { setHistoryOpen(false) },
+    }) : null,
     createElement('div', { ref: listRef, role: 'log', style: HISTORY_STYLE },
       showWelcome ? createElement('div', { style: WELCOME },
         createElement(PixiesCharacter, { size: 76, glow: true }),
@@ -445,6 +709,13 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
         message,
         marker: live === undefined && index === lastAssistant,
       })),
+      props.state.thinking !== undefined && props.state.thinking.text !== ''
+        ? createElement(ThinkingDisclosure, {
+          thinking: props.state.thinking,
+          copy: props.copy,
+          open: thinkingOpen,
+          onToggle: () => { setThinkingOpen(!thinkingOpen) },
+        }) : null,
       live !== undefined ? createElement('div', { style: rowStyle('assistant') },
         createElement('div', {
           'data-testid': 'pixies-bubble',

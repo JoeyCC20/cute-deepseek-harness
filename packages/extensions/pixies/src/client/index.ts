@@ -15,11 +15,14 @@ import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-api-session-controller/client'
 import { createPixiesStore } from './store.ts'
 import {
+  createPixiesSessionSelection,
   defaultPixiesMessages,
   followPixiesSession,
   mountPixiesShell,
+  pickPixiesSessionId,
   promptPixiesSession,
   resolvePixiesShellBridge,
+  type PixiesSessionPanel,
 } from './shell.tsx'
 
 export { createPixiesStore } from './store.ts'
@@ -38,6 +41,7 @@ export {
 } from './character.tsx'
 export type { PixiesPanelMessages } from './character.tsx'
 export {
+  createPixiesSessionSelection,
   defaultPixiesMessages,
   followPixiesSession,
   isPixiesVoiceCommandEvent,
@@ -49,6 +53,8 @@ export {
 } from './shell.tsx'
 export type {
   PixiesSessionFollow,
+  PixiesSessionPanel,
+  PixiesSessionSelection,
   PixiesShellBridge,
   PixiesShellMode,
   PixiesShellSpeechEvent,
@@ -87,6 +93,17 @@ let shellOverlay: HTMLDivElement | undefined
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
+  const selection = createPixiesSessionSelection()
+  const sessionPanel: PixiesSessionPanel = {
+    getSnapshot: () => ctx.sessions.list.getSnapshot(),
+    subscribe: (listener) => {
+      const offList = ctx.sessions.list.subscribe(listener)
+      const offSelection = selection.subscribe(listener)
+      return () => { offList(); offSelection() }
+    },
+    selectedId: () => pickPixiesSessionId(ctx.sessions.list.getSnapshot(), selection.get()),
+    select: (id) => { selection.set(id) },
+  }
   ctx.effect(() => () => { pixiesStore.clear() }, 'pixies-client: store teardown')
   ctx.remote.$on('approval/request', function (request, next) {
     pixiesStore.setInteraction({ kind: 'approval', sessionId: '', summary: request.toolName })
@@ -96,7 +113,7 @@ export function apply(ctx: ClientContext): void {
     pixiesStore.setInteraction({ kind: 'question', sessionId: '', summary: request.questions[0]?.question ?? '' })
     return next()
   })
-  const follow = followPixiesSession(ctx.sessions, pixiesStore)
+  const follow = followPixiesSession(ctx.sessions, pixiesStore, selection)
   ctx.effect(() => () => { follow.dispose() }, 'pixies-client: session follow teardown')
   if ((globalThis as Record<string, unknown>)[PIXIES_SHELL_FLAG] === true) {
     shellOverlay ??= globalThis.document.createElement('div')
@@ -109,7 +126,8 @@ export function apply(ctx: ClientContext): void {
       pixiesStore,
       defaultPixiesMessages,
       resolvePixiesShellBridge(),
-      text => promptPixiesSession(ctx.sessions, text),
+      text => promptPixiesSession(ctx.sessions, text, selection),
+      sessionPanel,
     )
     ctx.effect(() => () => {
       unmount()

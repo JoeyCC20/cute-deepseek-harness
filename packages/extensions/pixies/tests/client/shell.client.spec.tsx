@@ -14,8 +14,10 @@ import type {
   SessionEventSource,
   SessionListState,
 } from '@deepseek-ai/dsh-api-session-controller/client'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createPixiesStore } from '../../src/client/store.ts'
 import {
+  createPixiesSessionSelection,
   defaultPixiesMessages,
   followPixiesSession,
   mountPixiesShell,
@@ -23,10 +25,14 @@ import {
   promptPixiesSession,
 } from '../../src/client/shell.tsx'
 import type {
+  PixiesSessionPanel,
   PixiesShellBridge,
   PixiesShellMode,
   PixiesShellSpeechEvent,
 } from '../../src/client/shell.tsx'
+
+/** Branded session ids in compact test fixtures. */
+const sid = (value: string): SessionId => value as unknown as SessionId
 
 /** A minimal structural `SessionEventSource` with an appendable window. */
 function fakeEventSource(entries: readonly SessionEventLikeEntry[] = []): {
@@ -148,6 +154,71 @@ function listState(ids: readonly string[], current: string | undefined): Session
   } as unknown as SessionListState
 }
 
+/** One client-only live reasoning chunk on the transient seq axis. */
+function reasoningChunk(seq: number, text: string): SessionEventLikeEntry {
+  return {
+    type: 'transient',
+    event: {
+      type: 'assistant/live-chunk',
+      seq,
+      time: 0,
+      data: {
+        attemptId: 'attempt-1',
+        turn: 1,
+        step: 1,
+        chunk: { type: 'reasoning-delta', index: 0, text },
+      },
+    },
+  } as unknown as SessionEventLikeEntry
+}
+
+/** A catalog fixture with morning, afternoon, and older sessions. */
+function sessionPanelFixture(): {
+  panel: PixiesSessionPanel
+  selected: string[]
+  setIds: (ids: readonly string[]) => void
+} {
+  const today = new Date()
+  const at = (hour: number, dayOffset: number): number => {
+    const date = new Date(today)
+    date.setDate(date.getDate() + dayOffset)
+    date.setHours(hour, 0, 0, 0)
+    return date.getTime()
+  }
+  const summaries = {
+    a: { id: sid('a'), displayTitle: '上午的会话', running: false, blank: false, retainedBy: {}, updatedAt: at(9, 0) },
+    b: { id: sid('b'), displayTitle: '下午的会话', running: true, blank: false, retainedBy: {}, updatedAt: at(15, 0) },
+    c: { id: sid('c'), displayTitle: '更早的会话', running: false, blank: false, retainedBy: {}, updatedAt: at(9, -1) },
+  }
+  let state = {
+    // A catalog id without a projected row must be skipped, not rendered blank.
+    ids: [sid('a'), sid('b'), sid('c'), sid('ghost')],
+    byId: summaries,
+    phase: 'ready',
+    subagentsByParent: {},
+    jobsBySession: {},
+  } as unknown as SessionListState
+  const listeners = new Set<() => void>()
+  const selected: string[] = []
+  const panel: PixiesSessionPanel = {
+    getSnapshot: () => state,
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+    selectedId: () => sid('a'),
+    select: (id) => { selected.push(id) },
+  }
+  return {
+    panel,
+    selected,
+    setIds: (ids) => {
+      state = { ...state, ids: ids.map(sid) }
+      for (const listener of [...listeners]) listener()
+    },
+  }
+}
+
 /** One durable `assistant/message` entry carrying speakable text. */
 function assistantMessage(seq: number, text: string): SessionEventLikeEntry {
   return {
@@ -180,6 +251,30 @@ describe('pickPixiesSessionId', () => {
 
   it('is undefined while no session exists', () => {
     expect(pickPixiesSessionId(listState([], undefined))).toBeUndefined()
+  })
+
+  it('prefers a listed shell choice over the catalog preference', () => {
+    expect(pickPixiesSessionId(listState(['a', 'b'], 'a'), sid('b'))).toBe('b')
+  })
+
+  it('ignores a shell choice that is no longer listed', () => {
+    expect(pickPixiesSessionId(listState(['a'], 'a'), sid('gone'))).toBe('a')
+  })
+})
+
+describe('createPixiesSessionSelection', () => {
+  it('notifies subscribers only when the choice actually changes', () => {
+    const selection = createPixiesSessionSelection()
+    let calls = 0
+    const off = selection.subscribe(() => { calls += 1 })
+    expect(selection.get()).toBeUndefined()
+    selection.set(sid('a'))
+    selection.set(sid('a'))
+    expect(calls).toBe(1)
+    expect(selection.get()).toBe('a')
+    off()
+    selection.set(sid('b'))
+    expect(calls).toBe(1)
   })
 })
 
@@ -284,6 +379,93 @@ describe('followPixiesSession', () => {
     setList(listState(['a', 'b'], 'b'))
     await flushFollow()
     expect(b.listenerCount()).toBe(0)
+  })
+
+  it('forwards client-only reasoning chunks without replaying them', async () => {
+    const store = createPixiesStore()
+    const a = fakeEventSource()
+    const { sessions } = fakeSessions(listState(['a'], 'a'), new Map([['a', a.source]]))
+
+    const follow = followPixiesSession(sessions, store)
+    await flushFollow()
+    a.append(reasoningChunk(3.1, '先看'))
+    a.append(reasoningChunk(3.2, '再查'))
+    expect(store.getState().thinking).toEqual({ sessionId: 'a', text: '先看再查', active: true })
+
+    // A transient row from the initial window is not replayed on settlement.
+    a.append(reasoningChunk(3.1, '重复'))
+    expect(store.getState().thinking?.text).toBe('先看再查')
+    follow.dispose()
+  })
+
+  it('keeps transient and durable watermarks on separate axes', async () => {
+    const store = createPixiesStore()
+    const a = fakeEventSource()
+    const { sessions } = fakeSessions(listState(['a'], 'a'), new Map([['a', a.source]]))
+
+    const follow = followPixiesSession(sessions, store)
+    await flushFollow()
+    a.append(reasoningChunk(8.5, '推理'))
+    a.append(assistantMessage(2, '答案'))
+    expect(store.getState().latest?.text).toBe('答案')
+    expect(store.getState().thinking?.active).toBe(false)
+    follow.dispose()
+  })
+
+  it('rebinds when the shell selects a different session', async () => {
+    const store = createPixiesStore()
+    const selection = createPixiesSessionSelection()
+    const a = fakeEventSource()
+    const b = fakeEventSource()
+    const { sessions, retainCount } = fakeSessions(
+      listState(['a', 'b'], 'a'),
+      new Map([['a', a.source], ['b', b.source]]),
+    )
+
+    const follow = followPixiesSession(sessions, store, selection)
+    await flushFollow()
+    expect(retainCount('a')).toBe(1)
+
+    selection.set(sid('b'))
+    await flushFollow()
+    expect(a.listenerCount()).toBe(0)
+    expect(retainCount('a')).toBe(0)
+    expect(retainCount('b')).toBe(1)
+
+    b.append(assistantMessage(1, '新会话'))
+    expect(store.getState().latest?.sessionId).toBe('b')
+    follow.dispose()
+  })
+
+  it('seeds transient rows already in the initial window', async () => {
+    const store = createPixiesStore()
+    const a = fakeEventSource([reasoningChunk(2.5, '已有')])
+    const { sessions } = fakeSessions(listState(['a'], 'a'), new Map([['a', a.source]]))
+
+    const follow = followPixiesSession(sessions, store)
+    await flushFollow()
+    a.append(reasoningChunk(2.4, '过期'))
+    a.append(reasoningChunk(2.6, '新增'))
+    expect(store.getState().thinking?.text).toBe('新增')
+    follow.dispose()
+  })
+
+  it('stops following selection changes after dispose', async () => {
+    const store = createPixiesStore()
+    const selection = createPixiesSessionSelection()
+    const a = fakeEventSource()
+    const b = fakeEventSource()
+    const { sessions, retainCount } = fakeSessions(
+      listState(['a', 'b'], 'a'),
+      new Map([['a', a.source], ['b', b.source]]),
+    )
+
+    const follow = followPixiesSession(sessions, store, selection)
+    await flushFollow()
+    follow.dispose()
+    selection.set(sid('b'))
+    await flushFollow()
+    expect(retainCount('b')).toBe(0)
   })
 })
 
@@ -532,6 +714,109 @@ describe('mountPixiesShell with the shell bridge (phase 3)', () => {
     act(() => { disposer?.() })
     container.remove()
   })
+
+  it('keeps the reasoning stream collapsed by default and expands on click', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitMode } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
+    act(() => { emitMode('expanded') })
+    expect(container.querySelector('[data-testid="pixies-thinking"]')).toBeNull()
+
+    act(() => { store.appendThinking('s', '先看项目') })
+    const thinking = (): Element => container.querySelector('[data-testid="pixies-thinking"]')!
+    const toggle = (): Element => thinking().querySelector('[data-testid="pixies-thinking-toggle"]')!
+    expect(thinking().hasAttribute('data-streaming')).toBe(true)
+    expect(thinking().querySelector('[data-testid="pixies-thinking-body"]')).toBeNull()
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+    expect(toggle().getAttribute('aria-label')).toBe(defaultPixiesMessages.showThinking)
+
+    fireEvent.click(toggle())
+    expect(toggle().getAttribute('aria-expanded')).toBe('true')
+    expect(thinking().querySelector('[data-testid="pixies-thinking-body"]')?.textContent).toBe('先看项目')
+
+    act(() => { store.appendThinking('s', '再查日志') })
+    expect(thinking().querySelector('[data-testid="pixies-thinking-body"]')?.textContent)
+      .toBe('先看项目再查日志')
+
+    act(() => { store.settleThinking('s', '先看项目，再查日志') })
+    expect(thinking().hasAttribute('data-streaming')).toBe(false)
+    expect(thinking().querySelector('[data-testid="pixies-thinking-body"]')?.textContent)
+      .toBe('先看项目，再查日志')
+
+    fireEvent.click(toggle())
+    expect(thinking().querySelector('[data-testid="pixies-thinking-body"]')).toBeNull()
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('stores the history drawer collapsed and groups sessions by morning/afternoon/older', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitMode } = fakeBridge()
+    const { panel, selected, setIds } = sessionPanelFixture()
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, undefined, panel)
+    })
+    act(() => { emitMode('expanded') })
+    act(() => {
+      store.appendMessage({ role: 'user', text: '帮我查一下' })
+      store.appendMessage({ role: 'assistant', text: '收到' })
+      store.appendMessage({ role: 'system', text: 'turn 失败' })
+    })
+
+    const toggle = (): Element => container.querySelector('[data-testid="pixies-history-toggle"]')!
+    expect(container.querySelector('[data-testid="pixies-history-panel"]')).toBeNull()
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(toggle())
+    const drawer = (): Element => container.querySelector('[data-testid="pixies-history-panel"]')!
+    expect(drawer().textContent).toContain(defaultPixiesMessages.groupMorning)
+    expect(drawer().textContent).toContain(defaultPixiesMessages.groupAfternoon)
+    expect(drawer().textContent).toContain(defaultPixiesMessages.groupEarlier)
+    const rows = drawer().querySelectorAll('[data-testid="pixies-session-row"]')
+    expect(rows).toHaveLength(3)
+    expect(rows[0]?.hasAttribute('data-active')).toBe(true)
+    const contextRows = drawer().querySelectorAll('[data-testid="pixies-context-row"]')
+    expect(contextRows).toHaveLength(3)
+    expect(contextRows[0]?.textContent).toContain(defaultPixiesMessages.roleUser)
+    expect(contextRows[1]?.textContent).toContain(defaultPixiesMessages.roleAssistant)
+    expect(contextRows[2]?.textContent).toContain(defaultPixiesMessages.roleSystem)
+
+    fireEvent.click(rows[0]!)
+    expect(selected).toEqual([])
+    fireEvent.click(rows[1]!)
+    expect(selected).toEqual(['b'])
+    expect(store.getState().messages).toEqual([])
+
+    act(() => { setIds(['a', 'b']) })
+    expect(drawer().querySelectorAll('[data-testid="pixies-session-row"]')).toHaveLength(2)
+
+    fireEvent.click(container.querySelector('[data-testid="pixies-history-close"]')!)
+    expect(container.querySelector('[data-testid="pixies-history-panel"]')).toBeNull()
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('shows an empty-catalog note without a sessions face', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitMode } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
+    act(() => { emitMode('expanded') })
+    fireEvent.click(container.querySelector('[data-testid="pixies-history-toggle"]')!)
+    expect(container.querySelector('[data-testid="pixies-history-panel"]')?.textContent)
+      .toContain(defaultPixiesMessages.noSessions)
+    act(() => { disposer?.() })
+    container.remove()
+  })
 })
 
 describe('promptPixiesSession (phase 3 / phase 5 / phase 10)', () => {
@@ -613,6 +898,28 @@ describe('promptPixiesSession (phase 3 / phase 5 / phase 10)', () => {
     expect(created).toEqual([])
     expect(usingIds).toEqual(['a'])
     expect(bindingCalls).toEqual([])
+  })
+
+  it('prompts the shell-selected session instead of the catalog head', async () => {
+    const prompts: UsingRecord[] = []
+    const { sessions } = sessionsWithUsing(prompts, { state: listState(['a', 'b'], 'a') })
+    const selection = createPixiesSessionSelection()
+    selection.set(sid('b'))
+
+    await promptPixiesSession(sessions, '切换后的提问', selection)
+
+    expect(prompts).toEqual([{ id: 'b', content: [{ type: 'text', text: '切换后的提问' }], mode: 'queue' }])
+  })
+
+  it('falls back to the catalog head when the shell choice is no longer listed', async () => {
+    const prompts: UsingRecord[] = []
+    const { sessions } = sessionsWithUsing(prompts, { state: listState(['a'], 'a') })
+    const selection = createPixiesSessionSelection()
+    selection.set(sid('gone'))
+
+    await promptPixiesSession(sessions, '仍然送达', selection)
+
+    expect(prompts[0]?.id).toBe('a')
   })
 
   // Phase 10 regression: the real service keeps no binding for a merely

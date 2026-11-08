@@ -33,6 +33,11 @@ profile）、`electron-user-data`，以及自动补齐的 `office-skills`。启�
   模式切换以头像当前位置为中心伸缩，不会跳回默认角落。
 - 展开面板是一段完整对话：可滚动的用户/助手/系统消息历史、文本输入区（`Enter` 发送、
   `Shift+Enter` 换行）与麦克风按钮。思考中、聆听中、语音错误、turn 失败都有可见状态，失败不再静默。
+- 模型思考过程以流式写入消息历史下方的"思考过程"折叠块：默认收起，点击展开后可以看到实时增长的
+  推理文本；录制回放没有 client-only live chunk 时，会从持久化的 reasoning block 还原同样的文本。
+- 头部的时钟按钮是历史收纳入口：按今天上午、今天下午、更早分组展示会话，标出当前跟随的会话，
+  并预览本轮对话上下文。点击某一行即可切换头像跟随与提问的目标会话；由于 host 目录不投影
+  current 选择，这个偏好只保存在 Pixies 本地。抽屉默认收起。
 - 文本消息与语音 final 转写都通过 `promptPixiesSession` 排队进入当前跟随的会话，助手回复会流式
   追加到历史中。窗口模式由主进程持有，渲染进程挂载时会主动对齐。
 - 麦克风按钮先由有窗口的主进程申请麦克风权限，再驱动 Swift `SFSpeechRecognizer` CLI 子进程
@@ -71,9 +76,10 @@ profile）、`electron-user-data`，以及自动补齐的 `office-skills`。启�
 - `scripts/stage.ts` — profile/bundle 装配与 Office-skill 资产补齐。
 - `tests/` — chrome facade、转发器、图标、凭证注入与语音控制器的单元测试。
 
-React 界面位于并列的新增插件 `packages/extensions/pixies/src/client`：`conversation.tsx`（头像 +
-展开面板）、`character.tsx`（插画级 SVG 面具、聆听与思考光环、语音播报开关）、`window-drag.ts`（带阈值的指针拖拽）、`store.ts`
-（会话历史）、`feed.ts`（会话事件）、`shell.tsx`（挂载 + 输入路由）、`locale.ts`（locale-owned 文案）。
+React 界面位于并列的新增插件 `packages/extensions/pixies/src/client`：`conversation.tsx`（头像、
+展开面板、可折叠的思考过程与历史抽屉）、`character.tsx`（插画级 SVG 面具、聆听与思考光环、语音播报开关）、`window-drag.ts`（带阈值的指针拖拽）、`store.ts`
+（会话历史与推理流）、`feed.ts`（会话事件与 live chunk）、`shell.tsx`（挂载 + 输入路由 + 会话选择）、
+`locale.ts`（locale-owned 文案）。
 
 ## 已知限制与后续工作
 

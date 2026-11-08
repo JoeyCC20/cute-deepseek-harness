@@ -119,6 +119,50 @@ export function resolvePixiesShellBridge(): PixiesShellBridge | undefined {
 }
 
 /**
+ * A local session preference shared by the event follow, the prompt sender,
+ * and the history panel. The host never projects `SessionListState.current`,
+ * so Pixies keeps its own selection instead of writing the host catalog.
+ */
+export interface PixiesSessionSelection {
+  /** The explicitly chosen session, or undefined to follow the catalog head. */
+  readonly get: () => SessionId | undefined
+  /** Choose a session; a repeated choice is a no-op. */
+  readonly set: (id: SessionId) => void
+  /** Observe selection changes. */
+  readonly subscribe: (listener: () => void) => () => void
+}
+
+/** Create the in-window session selection owned by one plugin application. */
+export function createPixiesSessionSelection(): PixiesSessionSelection {
+  let selected: SessionId | undefined
+  const listeners = new Set<() => void>()
+  return {
+    get: () => selected,
+    set: (id) => {
+      if (selected === id) return
+      selected = id
+      for (const listener of [...listeners]) listener()
+    },
+    subscribe: (listener) => {
+      listeners.add(listener)
+      return () => { listeners.delete(listener) }
+    },
+  }
+}
+
+/**
+ * The catalog and selection face the expanded panel renders. `subscribe`
+ * covers both catalog mutations and selection changes, so one subscription
+ * keeps the history drawer live.
+ */
+export interface PixiesSessionPanel {
+  readonly getSnapshot: () => SessionListState
+  readonly subscribe: (listener: () => void) => () => void
+  readonly selectedId: () => SessionId | undefined
+  readonly select: (id: SessionId) => void
+}
+
+/**
  * Send one prompt as a queued text message into the followed session (the same
  * selection the character follows), creating that session first when the
  * profile has none. The prompt runs under `sessions.using`, which retains the
@@ -126,11 +170,16 @@ export function resolvePixiesShellBridge(): PixiesShellBridge | undefined {
  * to the caller so the bubble can say why.
  * @param sessions - the client sessions face.
  * @param text - the prompt text; blank text is dropped.
+ * @param selection - the shell's chosen session, when it has one.
  * @throws when session creation, retention, or the prompt RPC fails.
  */
-export async function promptPixiesSession(sessions: ISessions, text: string): Promise<void> {
+export async function promptPixiesSession(
+  sessions: ISessions,
+  text: string,
+  selection?: PixiesSessionSelection,
+): Promise<void> {
   if (text.trim() === '') return
-  const selected = pickPixiesSessionId(sessions.list.getSnapshot())
+  const selected = pickPixiesSessionId(sessions.list.getSnapshot(), selection?.get())
   const target = selected !== undefined ? selected : await sessions.create()
   await sessions.using(target, { source: 'pixiesShell' }, async (reference) => {
     await reference.ready
@@ -140,13 +189,16 @@ export async function promptPixiesSession(sessions: ISessions, text: string): Pr
 }
 
 /**
- * Pick the session the character follows: the current selection when present,
- * otherwise the first host-listed session.
+ * Pick the session the character follows: an explicit shell choice, then the
+ * catalog's own current preference, then the first host-listed session. A
+ * preference that is no longer listed cannot strand the follow on a dead id.
  * @param state - the sessions list snapshot.
+ * @param preferred - the shell's chosen session, when it has one.
  * @returns the followed session id, or undefined while no session exists.
  */
-export function pickPixiesSessionId(state: SessionListState): SessionId | undefined {
-  if (state.current !== undefined) return state.current
+export function pickPixiesSessionId(state: SessionListState, preferred?: SessionId): SessionId | undefined {
+  if (preferred !== undefined && state.ids.includes(preferred)) return preferred
+  if (state.current !== undefined && state.ids.includes(state.current)) return state.current
   return state.ids.length > 0 ? state.ids[0] : undefined
 }
 
@@ -157,20 +209,28 @@ export interface PixiesSessionFollow {
 }
 
 /**
- * Follow the target session's durable event window and feed every newly
- * appended `assistant/message` into the store. The follow retains the followed
- * session for its own lifetime (`pixiesShell` source), rebinds when the
- * followed session changes, and seeds its watermark after the initial history
- * open so only live output reaches the character.
+ * Follow the target session's event window and feed every newly appended
+ * durable event and client-only live chunk into the store. Transient rows have
+ * fractional seqs on a different axis from durable logs, so they carry their
+ * own watermark. The follow retains the followed session for its own lifetime
+ * (`pixiesShell` source), rebinds when the followed session or the shell's
+ * selection changes, and seeds both watermarks after the initial history open
+ * so only live output reaches the character.
  * @param sessions - the client sessions face.
  * @param store - the Pixies store to publish into.
+ * @param selection - the shell's chosen session, when it has one.
  * @returns a disposable follow handle.
  */
-export function followPixiesSession(sessions: ISessions, store: PixiesStore): PixiesSessionFollow {
+export function followPixiesSession(
+  sessions: ISessions,
+  store: PixiesStore,
+  selection?: PixiesSessionSelection,
+): PixiesSessionFollow {
   let disposeEvents: (() => void) | undefined
   let held: SessionReference | undefined
   let followedSessionId: SessionId | undefined
   let highWaterSeq = -1
+  let highWaterTransientSeq = -1
   let generation = 0
   let disposed = false
 
@@ -180,12 +240,13 @@ export function followPixiesSession(sessions: ISessions, store: PixiesStore): Pi
   }
 
   const rebind = (state: SessionListState): void => {
-    const target = pickPixiesSessionId(state)
+    const target = pickPixiesSessionId(state, selection?.get())
     if (target === undefined || target === followedSessionId) return
     const ticket = ++generation
     releaseEvents()
     followedSessionId = target
     highWaterSeq = -1
+    highWaterTransientSeq = -1
     held?.release()
     const reference = sessions.retain(target, { source: 'pixiesShell' })
     held = reference
@@ -194,14 +255,20 @@ export function followPixiesSession(sessions: ISessions, store: PixiesStore): Pi
       if (disposed || ticket !== generation) return
       const source = binding.eventSource
       for (const entry of source.getSnapshot().entries) {
-        if (entry.type === 'event' && entry.event.seq > highWaterSeq) highWaterSeq = entry.event.seq
+        if (entry.type === 'transient') {
+          if (entry.event.seq > highWaterTransientSeq) highWaterTransientSeq = entry.event.seq
+        } else if (entry.event.seq > highWaterSeq) highWaterSeq = entry.event.seq
       }
       disposeEvents = source.subscribe(() => {
         for (const entry of source.getSnapshot().entries) {
-          if (entry.type !== 'event') continue
           const event: SessionEventLike = entry.event
-          if (event.seq <= highWaterSeq) continue
-          highWaterSeq = event.seq
+          if (entry.type === 'transient') {
+            if (event.seq <= highWaterTransientSeq) continue
+            highWaterTransientSeq = event.seq
+          } else {
+            if (event.seq <= highWaterSeq) continue
+            highWaterSeq = event.seq
+          }
           feedSessionEvent(store, binding.sessionId, event)
         }
       })
@@ -211,13 +278,16 @@ export function followPixiesSession(sessions: ISessions, store: PixiesStore): Pi
     })
   }
 
-  const unsubscribeList = sessions.list.subscribe(() => { rebind(sessions.list.getSnapshot()) })
-  rebind(sessions.list.getSnapshot())
+  const refresh = (): void => { rebind(sessions.list.getSnapshot()) }
+  const unsubscribeList = sessions.list.subscribe(refresh)
+  const unsubscribeSelection = selection?.subscribe(refresh)
+  refresh()
   return {
     dispose: () => {
       disposed = true
       generation += 1
       unsubscribeList()
+      unsubscribeSelection?.()
       releaseEvents()
       held?.release()
       held = undefined
@@ -232,10 +302,12 @@ interface ShellPanelProps {
   readonly messages: PixiesPanelMessages
   readonly bridge: PixiesShellBridge | undefined
   readonly onSendText: ((text: string) => void | Promise<void>) | undefined
+  readonly sessionPanel: PixiesSessionPanel | undefined
 }
 
-function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): ReactElement {
+function ShellPanel({ store, messages, bridge, onSendText, sessionPanel }: ShellPanelProps): ReactElement {
   const [state, setState] = useState(store.getState)
+  const [sessionList, setSessionList] = useState<SessionListState | undefined>(sessionPanel?.getSnapshot())
   const [mode, setMode] = useState<PixiesShellMode>(bridge === undefined ? 'expanded' : 'mini')
   const [listening, setListening] = useState(false)
   const [partial, setPartial] = useState('')
@@ -269,6 +341,10 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
     })
   }, [onSendText, store, copy])
   useEffect(() => store.subscribe(setState), [store])
+  useEffect(() => {
+    if (sessionPanel === undefined) return
+    return sessionPanel.subscribe(() => { setSessionList(sessionPanel.getSnapshot()) })
+  }, [sessionPanel])
 
   // Any new non-user entry (a reply or a turn failure) ends the wait, even if
   // the turn/end event is late or missing.
@@ -412,6 +488,14 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
   }, [sendText])
   const onExpand = useCallback((): void => { bridge?.expand() }, [bridge])
   const onCollapse = useCallback((): void => { bridge?.collapse() }, [bridge])
+  const onSelectSession = useCallback((id: SessionId): void => {
+    if (sessionPanel === undefined || id === sessionPanel.selectedId()) return
+    // The visible transcript belongs to the old session; a new selection
+    // starts a fresh window instead of mixing two conversations.
+    store.clear()
+    setAwaitingReply(false)
+    sessionPanel.select(id)
+  }, [sessionPanel, store])
 
   const props: PixiesConversationProps = {
     copy,
@@ -431,6 +515,9 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
     onCollapse,
     onMicToggle,
     onVoiceToggle,
+    sessionList,
+    selectedSessionId: sessionPanel?.selectedId(),
+    onSelectSession,
   }
   return mode === 'mini'
     ? createElement(PixiesMiniView, props)
@@ -449,6 +536,7 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
  * @param bridge - the preload bridge; defaults to a global-scope lookup.
  * @param onFinalTranscript - callback for each submitted prompt; a returned
  *   Promise's rejection (send failure) surfaces in the status bubble.
+ * @param sessionPanel - the live catalog/selection rendered by the history drawer.
  * @returns a disposer that unmounts the React root.
  */
 export function mountPixiesShell(
@@ -457,8 +545,9 @@ export function mountPixiesShell(
   messages: PixiesPanelMessages = defaultPixiesMessages,
   bridge: PixiesShellBridge | undefined = resolvePixiesShellBridge(),
   onFinalTranscript?: (text: string) => void | Promise<void>,
+  sessionPanel?: PixiesSessionPanel,
 ): () => void {
   const root: Root = createRoot(container)
-  root.render(createElement(ShellPanel, { store, messages, bridge, onSendText: onFinalTranscript }))
+  root.render(createElement(ShellPanel, { store, messages, bridge, onSendText: onFinalTranscript, sessionPanel }))
   return () => { root.unmount() }
 }
