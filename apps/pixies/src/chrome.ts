@@ -91,6 +91,21 @@ export interface PixiesChromeOptions {
 export type PixiesWindowMode = 'mini' | 'expanded'
 
 /**
+ * Decide what the conversation shortcut should do: a visible expanded panel
+ * collapses to the avatar, while a hidden window always opens the panel rather
+ * than collapsing something the user cannot see.
+ * @param current - the mode the chrome currently owns.
+ * @param visible - whether the floating window is on screen.
+ * @returns the mode to apply.
+ */
+export function nextConversationMode(
+  current: PixiesWindowMode,
+  visible: boolean,
+): PixiesWindowMode {
+  return current === 'expanded' && visible ? 'mini' : 'expanded'
+}
+
+/**
  * Compute the top-right placement of the floating window inside the screen
  * work area, clamped to the work-area origin.
  * @param windowSize - floating window dimensions.

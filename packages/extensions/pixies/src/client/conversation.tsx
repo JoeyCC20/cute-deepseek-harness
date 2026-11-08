@@ -12,6 +12,7 @@ import {
   PixiesCollapseButton,
   PixiesListeningRing,
   PixiesMicButton,
+  PixiesThinkingRing,
   PixiesVoiceButton,
 } from './character.tsx'
 import type { PixiesResolvedMessages } from './locale.ts'
@@ -33,6 +34,8 @@ export interface PixiesConversationProps {
   readonly speaking: boolean
   /** Whether assistant replies are spoken aloud. */
   readonly voiceReplies: boolean
+  /** Waiting for the first reply after a submitted prompt. */
+  readonly awaitingReply: boolean
   readonly draft: string
   readonly onDraftChange: (value: string) => void
   readonly onSend: (text: string) => void
@@ -82,6 +85,12 @@ const MINI_LISTENING_BUTTON: CSSProperties = {
   border: '2px solid rgba(255,75,82,0.90)',
   background: 'radial-gradient(circle at 34% 26%, rgba(255,120,120,0.38), rgba(48,16,22,0.96) 72%)',
   boxShadow: '0 0 0 6px rgba(255,75,82,0.18), 0 16px 36px rgba(0,0,0,0.52), inset 0 1px 0 rgba(255,255,255,0.26)',
+}
+/** Distinct avatar styling while the agent is thinking after a voice command. */
+const MINI_THINKING_BUTTON: CSSProperties = {
+  border: '2px solid rgba(90,169,255,0.90)',
+  background: 'radial-gradient(circle at 34% 26%, rgba(120,180,255,0.34), rgba(16,32,58,0.96) 72%)',
+  boxShadow: '0 0 0 6px rgba(90,169,255,0.18), 0 16px 36px rgba(0,0,0,0.52), inset 0 1px 0 rgba(255,255,255,0.26)',
 }
 const MINI_VOICE_ERROR: CSSProperties = {
   position: 'absolute',
@@ -249,17 +258,25 @@ interface LiveBubble {
   readonly mood: 'asking' | 'thinking' | 'error'
 }
 
+/**
+ * Thinking covers the whole wait: the renderer marks it at submit time, and the
+ * host's turn/start marker keeps it alive across long turns.
+ */
+function isThinking(props: PixiesConversationProps): boolean {
+  return props.awaitingReply || props.state.pendingSession !== undefined
+}
+
 function liveBubble(props: PixiesConversationProps): LiveBubble | undefined {
   if (props.error !== '') return { text: props.error, mood: 'error' }
   if (props.listening) return { text: props.partial !== '' ? props.partial : props.copy.listening, mood: 'asking' }
-  if (props.state.pendingSession !== undefined) return { text: props.copy.thinking, mood: 'thinking' }
+  if (isThinking(props)) return { text: props.copy.thinking, mood: 'thinking' }
   return undefined
 }
 
 function statusOf(props: PixiesConversationProps): { readonly text: string; readonly color: string } {
   if (props.listening) return { text: props.copy.statusListening, color: '#ff4b52' }
   if (props.speaking) return { text: props.copy.statusSpeaking, color: '#ffc247' }
-  if (props.state.pendingSession !== undefined) return { text: props.copy.statusThinking, color: '#5aa9ff' }
+  if (isThinking(props)) return { text: props.copy.statusThinking, color: '#5aa9ff' }
   return { text: props.copy.statusIdle, color: '#4ade80' }
 }
 
@@ -272,20 +289,24 @@ export function PixiesMiniView(props: PixiesConversationProps): ReactElement {
   const drag = usePixiesWindowDrag(props.bridge)
   const [hovered, setHovered] = useState(false)
   const accepting = props.listening
+  const thinking = isThinking(props)
+  const showThinking = thinking && !accepting && !props.speaking
+  const activeStyle = accepting ? MINI_LISTENING_BUTTON : showThinking ? MINI_THINKING_BUTTON : undefined
   const mood = accepting || props.state.interaction !== undefined
     ? 'asking'
-    : props.state.pendingSession !== undefined ? 'thinking' : 'neutral'
+    : showThinking ? 'thinking' : 'neutral'
   const badgeColor = accepting
     ? '#ff4b52'
     : props.speaking
       ? '#ffc247'
-      : props.state.pendingSession !== undefined
+      : thinking
         ? '#5aa9ff'
         : props.state.messages.length > 0 ? '#ff4b52' : '#4ade80'
   return createElement('div', {
     'data-pixies-shell': '',
     'data-mode': 'mini' as PixiesShellMode,
     'data-listening': accepting ? '' : undefined,
+    'data-thinking': showThinking ? '' : undefined,
     'data-speaking': props.speaking ? '' : undefined,
     ...drag.containerProps,
     style: { ...MINI_ROOT, ...drag.containerProps.style },
@@ -294,23 +315,27 @@ export function PixiesMiniView(props: PixiesConversationProps): ReactElement {
     type: 'button',
     'data-testid': 'pixies-mini',
     'data-listening': accepting ? '' : undefined,
-    'aria-label': accepting ? props.copy.voiceCommandListening : props.copy.expand,
+    'data-thinking': showThinking ? '' : undefined,
+    'aria-label': accepting
+      ? props.copy.voiceCommandListening
+      : showThinking ? props.copy.statusThinking : props.copy.expand,
     style: {
       ...MINI_BUTTON,
-      ...(accepting ? MINI_LISTENING_BUTTON : {}),
-      transform: hovered || accepting ? 'scale(1.06)' : 'scale(1)',
-      boxShadow: accepting
-        ? MINI_LISTENING_BUTTON.boxShadow
-        : hovered
+      ...(activeStyle ?? {}),
+      transform: hovered || activeStyle !== undefined ? 'scale(1.06)' : 'scale(1)',
+      boxShadow: activeStyle?.boxShadow
+        ?? (hovered
           ? '0 16px 36px rgba(0,0,0,0.52), inset 0 1px 0 rgba(255,255,255,0.26)'
-          : MINI_BUTTON.boxShadow,
+          : MINI_BUTTON.boxShadow),
     },
     onPointerEnter: () => { setHovered(true) },
     onPointerLeave: () => { setHovered(false) },
     onClick: props.onExpand,
   },
   createElement(PixiesCharacter, { size: 78, mood, glow: true }),
-  accepting ? createElement(PixiesListeningRing) : null,
+  accepting
+    ? createElement(PixiesListeningRing)
+    : showThinking ? createElement(PixiesThinkingRing) : null,
   createElement('span', { style: { ...MINI_BADGE, background: badgeColor } }),
   props.voiceError !== '' ? createElement('span', {
     'data-testid': 'pixies-voice-error',
@@ -381,7 +406,7 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
     },
     createElement(PixiesCharacter, {
       size: 36,
-      mood: props.listening ? 'asking' : props.state.pendingSession !== undefined ? 'thinking' : 'neutral',
+      mood: props.listening ? 'asking' : isThinking(props) ? 'thinking' : 'neutral',
     }),
     createElement('div', { style: { flex: 1, minWidth: 0 } },
       createElement('div', { style: TITLE }, props.copy.title),

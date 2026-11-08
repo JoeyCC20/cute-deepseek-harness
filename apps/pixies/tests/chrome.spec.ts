@@ -4,7 +4,7 @@
  * injected fakes, no Electron display required.
  */
 import { describe, expect, it, vi } from 'vitest'
-import { clampPositionToWorkArea, createPixiesChrome, topRightPosition, unionWorkArea } from '../src/chrome.ts'
+import { clampPositionToWorkArea, createPixiesChrome, nextConversationMode, topRightPosition, unionWorkArea } from '../src/chrome.ts'
 import type { PixiesChromeDeps, PixiesTrayLike, PixiesWindowLike } from '../src/chrome.ts'
 
 interface WindowState {
@@ -464,5 +464,36 @@ describe('extra global shortcuts (voice command / expand)', () => {
     expect(chrome.shortcutRegistered).toBe(true)
     expect(chrome.registerShortcut('CommandOrControl+Shift+K', () => {})).toBe(false)
     expect(chrome.shortcutRegistered).toBe(false)
+  })
+})
+
+describe('conversation shortcut toggle', () => {
+  it('collapses only a visible expanded panel', () => {
+    expect(nextConversationMode('expanded', true)).toBe('mini')
+    expect(nextConversationMode('expanded', false)).toBe('expanded')
+    expect(nextConversationMode('mini', true)).toBe('expanded')
+    expect(nextConversationMode('mini', false)).toBe('expanded')
+  })
+
+  it('applies each returned mode to the window geometry', () => {
+    const { deps, windowState } = bench()
+    const chrome = createPixiesChrome(deps, {
+      accelerator: 'CommandOrControl+Shift+P',
+      windowSize: { width: 420, height: 640 },
+      screenMargin: 12,
+      tooltip: 'Pixies',
+      miniSize: { width: 112, height: 112 },
+      initialMode: 'mini',
+    })
+    expect(chrome.mode).toBe('mini')
+    expect(windowState.width).toBe(112)
+
+    chrome.setMode(nextConversationMode(chrome.mode, true))
+    expect(chrome.mode).toBe('expanded')
+    expect(windowState.width).toBe(420)
+
+    chrome.setMode(nextConversationMode(chrome.mode, true))
+    expect(chrome.mode).toBe('mini')
+    expect(windowState.width).toBe(112)
   })
 })

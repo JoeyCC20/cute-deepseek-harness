@@ -20,7 +20,7 @@ pnpm run start:pixies      # reuse the prepared project and launch immediately
 
 开发状态位于 `apps/pixies/.pixies-build/development`：`home`（Harness home）、`project`（一次性
 profile）、`electron-user-data`，以及自动补齐的 `office-skills`。启动后窗口即显示；点击托盘切换显示，
-`Cmd/Ctrl+Shift+P` 唤起，`Cmd/Ctrl+Shift+J` 开始或结束语音指令，`Cmd/Ctrl+Shift+K` 打开对话面板，
+`Cmd/Ctrl+Shift+P` 唤起，`Cmd/Ctrl+Shift+J` 开始或结束语音指令，`Cmd/Ctrl+Shift+K` 切换对话面板，
 托盘右键菜单提供显示/隐藏、重置位置与退出。需要调试渲染进程时设置 `DSH_PIXIES_OPEN_DEVTOOLS=1`。
 
 凭证来自仓库根目录 `.env`（开发模式通过 `DSH_PIXIES_ENV_FILE` 明确指定）、`~/.config/dsh/env`
@@ -41,8 +41,9 @@ profile）、`electron-user-data`，以及自动补齐的 `office-skills`。启�
   内嵌进 helper 并做 ad-hoc 签名；开发启动器通过 LaunchServices 启动 Electron，让 TCC 把授权
   归给 Pixies 自己的 bundle，而不是启动它的 IDE 或终端。
 - `Cmd/Ctrl+Shift+J` 无需点击即可发起语音指令：迷你头像切换为红色脉冲光环，表示 Swift 识别器
-  正在接受指令；再按一次结束本轮并送出已识别的草稿。`Cmd/Ctrl+Shift+K` 显示窗口并展开对话面板。
-  两个快捷键都由托盘 chrome 持有，退出时统一注销。
+  正在接受指令；再按一次结束本轮并送出已识别的草稿。从提交指令到首条回复之间，头像改为蓝色
+  旋转思考光环，长时间的模型调用不会看起来像卡住。`Cmd/Ctrl+Shift+K` 是展开/收起切换：按一次
+  显示并展开对话面板，再按一次收起为迷你头像。两个快捷键都由托盘 chrome 持有，退出时统一注销。
 - 助手回复优先用语音返回，走同一个 Swift helper 的 `speak` 子命令（`AVSpeechSynthesizer`）：按回复
   语种选择嗓音，面板头部的喇叭按钮可静音。播报前会把内容压成纯文本（去掉代码、链接与 URL）并
   限制长度；合成失败会在面板里给出原因，不会静默失败。
@@ -71,7 +72,7 @@ profile）、`electron-user-data`，以及自动补齐的 `office-skills`。启�
 - `tests/` — chrome facade、转发器、图标、凭证注入与语音控制器的单元测试。
 
 React 界面位于并列的新增插件 `packages/extensions/pixies/src/client`：`conversation.tsx`（头像 +
-展开面板）、`character.tsx`（插画级 SVG 面具、聆听光环、语音播报开关）、`window-drag.ts`（带阈值的指针拖拽）、`store.ts`
+展开面板）、`character.tsx`（插画级 SVG 面具、聆听与思考光环、语音播报开关）、`window-drag.ts`（带阈值的指针拖拽）、`store.ts`
 （会话历史）、`feed.ts`（会话事件）、`shell.tsx`（挂载 + 输入路由）、`locale.ts`（locale-owned 文案）。
 
 ## 已知限制与后续工作

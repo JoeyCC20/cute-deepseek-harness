@@ -33,6 +33,7 @@ export {
   PixiesListeningRing,
   PixiesMicButton,
   PixiesPanel,
+  PixiesThinkingRing,
   PixiesVoiceButton,
 } from './character.tsx'
 export type { PixiesPanelMessages } from './character.tsx'

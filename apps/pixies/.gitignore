@@ -1,0 +1,2 @@
+# Local-only helper scripts; never committed so pull/update stays conflict-free.
+local-scripts/

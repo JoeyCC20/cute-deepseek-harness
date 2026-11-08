@@ -95,7 +95,7 @@ export const defaultPixiesMessages: PixiesResolvedMessages = {
   empty: '在下面直接输入，或点麦克风说话。拖动顶部可以把我放到屏幕任何地方。',
   placeholder: '给 Pixies 发消息…',
   send: '发送',
-  sendHint: 'Enter 发送 · Shift+Enter 换行 · Esc 收起 · ⌘⇧J 语音指令 · ⌘⇧K 展开对话',
+  sendHint: 'Enter 发送 · Shift+Enter 换行 · Esc 收起 · ⌘⇧J 语音指令 · ⌘⇧K 展开/收起',
   inputLabel: '消息输入框',
 }
 

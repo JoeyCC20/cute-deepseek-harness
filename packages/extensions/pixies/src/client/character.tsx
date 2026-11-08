@@ -179,29 +179,58 @@ export function PixiesPanel({ state, messages, showIdleCharacter = false, speech
 }
 
 /**
- * Animated halo drawn around the mini avatar while a voice-command round is
- * live. SVG animation keeps the transparent Electron window stylesheet-free.
+ * Animated halo around the mini avatar: a red pulse while listening, a blue
+ * rotating dashed ring while thinking. SVG animation keeps the transparent
+ * Electron window stylesheet-free.
+ * @param mode - which round is active.
+ * @param tone - stroke color.
+ * @param testId - stable marker for tests.
  */
-export function PixiesListeningRing(): ReactElement {
+function StatusRing({ mode, tone, testId }: {
+  mode: 'listening' | 'thinking'
+  tone: string
+  testId: string
+}): ReactElement {
+  const thinking = mode === 'thinking'
   return createElement('svg', {
     width: '100%',
     height: '100%',
     viewBox: '0 0 112 112',
     'aria-hidden': true,
-    'data-testid': 'pixies-listening-ring',
+    'data-testid': testId,
     style: { position: 'absolute', inset: 0, pointerEvents: 'none' },
   },
   createElement('circle', {
-    cx: 56, cy: 56, r: 47, fill: 'none', stroke: '#ff4b52', strokeWidth: 2, opacity: 0.85,
+    cx: 56, cy: 56, r: 47, fill: 'none', stroke: tone, strokeWidth: 2, opacity: 0.85,
+    strokeDasharray: thinking ? '12 14' : undefined,
+    strokeLinecap: thinking ? 'round' : undefined,
   },
+  thinking
+    ? createElement('animateTransform', {
+      attributeName: 'transform', type: 'rotate',
+      from: '0 56 56', to: '360 56 56', dur: '2.4s', repeatCount: 'indefinite',
+    })
+    : createElement('animate', {
+      attributeName: 'r', values: '47;54;47', dur: '1.4s', repeatCount: 'indefinite',
+    }),
   createElement('animate', {
-    attributeName: 'r', values: '47;54;47', dur: '1.4s', repeatCount: 'indefinite',
-  }),
-  createElement('animate', {
-    attributeName: 'opacity', values: '0.85;0.12;0.85', dur: '1.4s', repeatCount: 'indefinite',
+    attributeName: 'opacity',
+    values: thinking ? '0.35;0.95;0.35' : '0.85;0.12;0.85',
+    dur: thinking ? '2.4s' : '1.4s',
+    repeatCount: 'indefinite',
   }),
   ),
   )
+}
+
+/** Red pulsing halo for a live voice-command round. */
+export function PixiesListeningRing(): ReactElement {
+  return createElement(StatusRing, { mode: 'listening', tone: '#ff4b52', testId: 'pixies-listening-ring' })
+}
+
+/** Blue rotating halo for the wait between a submitted prompt and its reply. */
+export function PixiesThinkingRing(): ReactElement {
+  return createElement(StatusRing, { mode: 'thinking', tone: '#5aa9ff', testId: 'pixies-thinking-ring' })
 }
 
 const CONTROL_BUTTON_STYLE: CSSProperties = {

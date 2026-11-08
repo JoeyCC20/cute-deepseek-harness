@@ -22,7 +22,7 @@ pnpm run start:pixies      # reuse the prepared project and launch immediately
 Dev state lives under `apps/pixies/.pixies-build/development`: `home` (Harness home), `project`
 (disposable profile), `electron-user-data`, and `office-skills` (restored automatically). The window
 appears on launch; tray click toggles it, `Cmd/Ctrl+Shift+P` shows it, `Cmd/Ctrl+Shift+J` starts or
-ends a voice command, `Cmd/Ctrl+Shift+K` opens the conversation panel, and the tray right-click menu
+ends a voice command, `Cmd/Ctrl+Shift+K` toggles the conversation panel, and the tray right-click menu
 offers show/hide, reset position, and quit. Set `DSH_PIXIES_OPEN_DEVTOOLS=1` to debug the renderer.
 
 Credentials come from the repository root `.env` (`DSH_PIXIES_ENV_FILE` in development), from
@@ -49,8 +49,10 @@ already present in the environment. `DEEPSEEK_API_KEY` is required for replies.
   prompts to a Pixies bundle rather than the IDE or terminal that spawned it.
 - `Cmd/Ctrl+Shift+J` starts a voice command without any click: the mini avatar switches to a red
   pulsing listening ring while the Swift recognizer accepts the instruction, and a second press ends
-  the round and sends the recognized draft. `Cmd/Ctrl+Shift+K` shows the window and expands the
-  conversation panel. Both shortcuts are owned by the tray chrome and released on quit.
+  the round and sends the recognized draft. From that submit until the first reply the avatar shows a
+  blue rotating thinking ring instead, so a long model call never looks idle. `Cmd/Ctrl+Shift+K`
+  toggles the conversation panel: one press shows and expands it, a second press collapses it back to
+  the mini avatar. Both shortcuts are owned by the tray chrome and released on quit.
 - Assistant replies are returned by voice first through the same Swift helper's `speak` subcommand
   (`AVSpeechSynthesizer`), with the voice language chosen from the reply and a speaker toggle in the
   panel header to mute them. Spoken output is reduced to prose (code, links, and URLs are dropped)
@@ -81,8 +83,8 @@ already present in the environment. `DEEPSEEK_API_KEY` is required for replies.
 - `tests/` — unit tests for the chrome facade, forwarder, icons, keychain, and speech controller.
 
 The React surfaces live in the sibling additive plugin `packages/extensions/pixies/src/client`:
-`conversation.tsx` (avatar + expanded panel), `character.tsx` (illustrated SVG mask, listening ring,
-voice-reply toggle),
+`conversation.tsx` (avatar + expanded panel), `character.tsx` (illustrated SVG mask, listening and
+thinking rings, voice-reply toggle),
 `window-drag.ts` (thresholded pointer drag), `store.ts` (conversation history), `feed.ts`
 (session events), `shell.tsx` (mount + input routing), and `locale.ts` (locale-owned copy).
 

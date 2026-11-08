@@ -76,6 +76,9 @@ function isShellMode(value: unknown): value is PixiesShellMode {
   return value === 'mini' || value === 'expanded'
 }
 
+/** Give up on a silent host so the avatar never spins forever. */
+const AWAITING_REPLY_TIMEOUT_MS = 90_000
+
 /** Narrow one wire payload from the speech-output channel. */
 export function isPixiesVoiceReplyEvent(value: unknown): value is PixiesShellVoiceEvent {
   if (typeof value !== 'object' || value === null) return false
@@ -240,12 +243,14 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
   const [voiceError, setVoiceError] = useState('')
   const [voiceReplies, setVoiceReplies] = useState(true)
   const [speaking, setSpeaking] = useState(false)
+  const [awaitingReply, setAwaitingReply] = useState(false)
   const [draft, setDraft] = useState('')
   const copy = useMemo(() => resolvePixiesMessages(messages), [messages])
   // Shortcut callbacks arrive outside React's render flow, so the latest
   // recognized draft and the last spoken reply must live in refs.
   const partialRef = useRef('')
   const spokenIdRef = useRef(lastReply(state.messages)?.id)
+  const submittedReplyIdRef = useRef<string | undefined>(undefined)
   const setPartialText = useCallback((text: string): void => {
     partialRef.current = text
     setPartial(text)
@@ -253,12 +258,31 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
   const sendText = useCallback((text: string): void => {
     const trimmed = text.trim()
     if (trimmed === '') return
+    // Thinking feedback starts with the submit itself: the host's turn/start
+    // arrives later (or not at all), so session events alone leave a gap.
+    submittedReplyIdRef.current = lastReply(store.getState().messages)?.id
+    setAwaitingReply(true)
     store.appendMessage({ role: 'user', text: trimmed })
     void Promise.resolve(onSendText?.(trimmed)).catch((error: unknown) => {
       setSpeechError(`${copy.promptFailed}: ${error instanceof Error ? error.message : String(error)}`)
+      setAwaitingReply(false)
     })
   }, [onSendText, store, copy])
   useEffect(() => store.subscribe(setState), [store])
+
+  // Any new non-user entry (a reply or a turn failure) ends the wait, even if
+  // the turn/end event is late or missing.
+  useEffect(() => {
+    if (!awaitingReply) return
+    const newest = lastReply(state.messages)
+    if (newest !== undefined && newest.id !== submittedReplyIdRef.current) setAwaitingReply(false)
+  }, [state.messages, awaitingReply])
+
+  useEffect(() => {
+    if (!awaitingReply) return
+    const timer = setTimeout(() => { setAwaitingReply(false) }, AWAITING_REPLY_TIMEOUT_MS)
+    return () => { clearTimeout(timer) }
+  }, [awaitingReply])
 
   // Voice-first results: the newest reply (or turn failure) is spoken through
   // the host. History present at mount is never replayed aloud.
@@ -292,6 +316,7 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
         setPartialText('')
         setSpeechError('')
         setVoiceError('')
+        setAwaitingReply(false)
         return
       }
       // A second press ends the round: the recognized draft is still input.
@@ -366,6 +391,7 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
     setListening(true)
     setPartialText('')
     setSpeechError('')
+    setAwaitingReply(false)
     bridge.startSpeech()
   }, [listening, bridge, sendText, copy, setPartialText])
 
@@ -397,6 +423,7 @@ function ShellPanel({ store, messages, bridge, onSendText }: ShellPanelProps): R
     voiceError,
     speaking,
     voiceReplies,
+    awaitingReply,
     draft,
     onDraftChange: setDraft,
     onSend,

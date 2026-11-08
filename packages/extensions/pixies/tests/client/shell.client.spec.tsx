@@ -6,7 +6,7 @@
  * that stays live from the store.
  */
 import { act, fireEvent } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type {
   ISessions,
   SessionEventChange,
@@ -455,7 +455,10 @@ describe('mountPixiesShell with the shell bridge (phase 3)', () => {
     expect(finals).toEqual(['你好世界'])
     expect(calls).toEqual(['startSpeech', 'stopSpeech'])
     expect(mic().hasAttribute('data-active')).toBe(false)
-    expect(container.querySelector('[data-testid="pixies-bubble"]')).toBeNull() // idle again
+    // A delivered transcript now waits for the agent: the thinking bubble
+    // bridges that gap instead of making the panel look idle.
+    expect(container.querySelector('[data-testid="pixies-bubble"]')?.textContent)
+      .toBe(defaultPixiesMessages.thinking)
 
     // Second round: a partial then an error also ends the round without firing.
     fireEvent.click(mic())
@@ -913,5 +916,90 @@ describe('voice-command shortcut and spoken replies', () => {
 
     act(() => { b.bridge.emitVoiceReply({ type: 'done' }) })
     b.dispose()
+  })
+
+  it('shows a thinking avatar from the voice-command submit until the reply arrives', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitSpeech, emitVoiceCommand } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, () => {})
+    })
+    const mini = (): HTMLElement => container.querySelector('[data-testid="pixies-mini"]')!
+
+    act(() => { emitVoiceCommand({ type: 'start' }) })
+    act(() => { emitSpeech({ type: 'partial', text: '今天天气' }) })
+    expect(mini().getAttribute('data-listening')).toBe('')
+    expect(mini().hasAttribute('data-thinking')).toBe(false)
+
+    act(() => { emitVoiceCommand({ type: 'stop' }) })
+    expect(mini().hasAttribute('data-listening')).toBe(false)
+    expect(mini().getAttribute('data-thinking')).toBe('')
+    expect(mini().getAttribute('aria-label')).toBe(defaultPixiesMessages.statusThinking)
+    expect(container.querySelector('[data-pixies-shell]')?.getAttribute('data-thinking')).toBe('')
+    expect(container.querySelector('[data-testid="pixies-thinking-ring"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="pixies-listening-ring"]')).toBeNull()
+
+    act(() => { speak(store, 'session-1#9', '晴，25 度') })
+    expect(mini().hasAttribute('data-thinking')).toBe(false)
+    expect(container.querySelector('[data-testid="pixies-thinking-ring"]')).toBeNull()
+
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('keeps the thinking bubble while the host reports a mid-turn session', () => {
+    const b = expandedBench()
+    act(() => { b.store.beginThinking('session-1') })
+    expect(b.container.textContent).toContain(defaultPixiesMessages.statusThinking)
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')?.textContent)
+      .toBe(defaultPixiesMessages.thinking)
+    act(() => { b.store.endThinking('session-1') })
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    b.dispose()
+  })
+
+  it('drops the thinking state when sending the prompt fails', async () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitSpeech, emitVoiceCommand } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge,
+        () => Promise.reject(new Error('offline')))
+    })
+    const mini = (): HTMLElement => container.querySelector('[data-testid="pixies-mini"]')!
+    act(() => { emitVoiceCommand({ type: 'start' }) })
+    act(() => { emitSpeech({ type: 'partial', text: '在吗' }) })
+    await act(async () => { emitVoiceCommand({ type: 'stop' }) })
+    expect(mini().hasAttribute('data-thinking')).toBe(false)
+    expect(container.querySelector('[data-testid="pixies-thinking-ring"]')).toBeNull()
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('stops thinking when the host never answers', () => {
+    vi.useFakeTimers()
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitSpeech, emitVoiceCommand } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, () => {})
+    })
+    const mini = (): HTMLElement => container.querySelector('[data-testid="pixies-mini"]')!
+    act(() => { emitVoiceCommand({ type: 'start' }) })
+    act(() => { emitSpeech({ type: 'partial', text: '在吗' }) })
+    act(() => { emitVoiceCommand({ type: 'stop' }) })
+    expect(mini().getAttribute('data-thinking')).toBe('')
+    act(() => { vi.runAllTimers() })
+    expect(mini().hasAttribute('data-thinking')).toBe(false)
+    act(() => { disposer?.() })
+    vi.useRealTimers()
+    container.remove()
   })
 })

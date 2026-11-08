@@ -36,7 +36,7 @@ import {
   systemPreferences,
   Tray,
 } from 'electron'
-import { createPixiesChrome, unionWorkArea, type PixiesChromeDeps, type PixiesWindowLike } from './chrome.ts'
+import { createPixiesChrome, nextConversationMode, unionWorkArea, type PixiesChromeDeps, type PixiesWindowLike } from './chrome.ts'
 import { DesktopHostProcess } from './host-process.ts'
 import { forwardToPixiesHost, pixiesBootPayload, pixiesWebSocketHeaders } from './host-proxy.ts'
 import { spiderMaskIcon } from './icon.ts'
@@ -53,8 +53,8 @@ const MINI_MARGIN = 8
 const SHORTCUT = 'CommandOrControl+Shift+P'
 /** Start/stop one voice-command round without clicking the avatar. */
 const VOICE_COMMAND_SHORTCUT = 'CommandOrControl+Shift+J'
-/** Open the conversation panel from anywhere. */
-const EXPAND_SHORTCUT = 'CommandOrControl+Shift+K'
+/** Toggle the conversation panel from anywhere. */
+const CONVERSATION_SHORTCUT = 'CommandOrControl+Shift+K'
 const TOOLTIP = 'Pixies · 蜘蛛侠'
 const PLACEMENT_FILE = 'pixies-window.json'
 
@@ -737,15 +737,16 @@ async function main(): Promise<void> {
     pixiesWindow?.webContents.send('pixies:voice-command', { type: 'start' })
     void startSpeech()
   }
-  /** Cmd/Ctrl+Shift+K: show the window and open the conversation panel. */
-  const expandConversation = (): void => {
-    chrome.setMode('expanded')
-    notifyMode('expanded')
-    chrome.show()
+  /** Cmd/Ctrl+Shift+K: open the conversation panel, or collapse it back to the avatar. */
+  const toggleConversation = (): void => {
+    const next = nextConversationMode(chrome.mode, chrome.window.isVisible())
+    chrome.setMode(next)
+    notifyMode(next)
+    if (next === 'expanded') chrome.show()
   }
   for (const [accelerator, callback] of [
     [VOICE_COMMAND_SHORTCUT, beginVoiceCommand],
-    [EXPAND_SHORTCUT, expandConversation],
+    [CONVERSATION_SHORTCUT, toggleConversation],
   ] as const) {
     if (!chrome.registerShortcut(accelerator, callback)) {
       console.warn(`[pixies] global shortcut ${accelerator} could not be registered (already in use)`)
