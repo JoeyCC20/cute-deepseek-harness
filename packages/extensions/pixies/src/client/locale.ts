@@ -101,6 +101,68 @@ export interface PixiesPanelMessages {
   readonly thinkingStreaming?: string
   /** Badge once the reasoning stream has settled. */
   readonly thinkingDone?: string
+  /** Settings drawer headline and collapsed entry label. */
+  readonly settings?: string
+  /** Accessible label of the button that opens settings. */
+  readonly settingsOpen?: string
+  /** Accessible label of the button that closes settings. */
+  readonly settingsClose?: string
+  /** Section headline for model settings. */
+  readonly modelSection?: string
+  /** Label for the effective model selection. */
+  readonly modelCurrent?: string
+  /** Label of the dropdown option that switches to a typed model id. */
+  readonly modelCustom?: string
+  /** Label for the provider selector. */
+  readonly modelProvider?: string
+  /** Label for the exclusive model dropdown. */
+  readonly modelSelect?: string
+  /** Label for the model id input. */
+  readonly modelId?: string
+  /** Placeholder for the model id input. */
+  readonly modelIdPlaceholder?: string
+  /** Label of the button that applies a selection. */
+  readonly modelApply?: string
+  /** Status while the catalog loads. */
+  readonly modelLoading?: string
+  /** Status while a selection is being installed. */
+  readonly modelApplying?: string
+  /** Headline for providers whose catalog lookup failed. */
+  readonly modelFailures?: string
+  /** Explains that the built-in entry and the typed id are exclusive. */
+  readonly modelHint?: string
+  /** Section headline for the selected model's own API key. */
+  readonly keySection?: string
+  /** Label naming the model a key belongs to. */
+  readonly keyModel?: string
+  /** Status when no model is selected yet, so no key belongs to anything. */
+  readonly keyModelMissing?: string
+  /** Status line prefix for the selected model's key. */
+  readonly keyRef?: string
+  /** Accessible label for the API key input. */
+  readonly keyInput?: string
+  /** Placeholder for the API key input. */
+  readonly keyPlaceholder?: string
+  /** Button label while a key is being stored. */
+  readonly keySaving?: string
+  /** Status when the model already has a key. */
+  readonly keyConfigured?: string
+  /** Status when the model has no key of its own. */
+  readonly keyMissing?: string
+  /** Note for a key that fails the input-format check. */
+  readonly keyInvalid?: string
+  /** Explains where the key is stored and when it takes effect. */
+  readonly keyHint?: string
+  /** Suffix for an installed provider route that is not enabled yet. */
+  readonly providerUnregistered?: string
+  /** Headline when enabling a provider route fails. */
+  readonly providerEnableFailed?: string
+  /** Button label while a provider route is being enabled. */
+  readonly providerEnabling?: string
+  /** Subtitle of the standalone settings window. */
+  readonly settingsHint?: string
+  /** Explains that the provider dropdown contains every installed route. */
+  readonly providerHint?: string
 }
 
 /** Every field resolved to a concrete string. */
@@ -154,6 +216,37 @@ export const defaultPixiesMessages: PixiesResolvedMessages = {
   hideThinking: '收起思考过程',
   thinkingStreaming: '生成中',
   thinkingDone: '已完成',
+  settings: '设置',
+  settingsOpen: '打开设置',
+  settingsClose: '关闭设置',
+  modelSection: '模型',
+  modelCurrent: '当前模型',
+  modelCustom: '自定义模型…',
+  modelProvider: '提供商',
+  modelSelect: '选择模型',
+  modelId: '模型 ID',
+  modelIdPlaceholder: '输入模型 ID',
+  modelApply: '应用',
+  modelLoading: '加载中',
+  modelApplying: '应用中',
+  modelFailures: '部分模型加载失败',
+  modelHint: '从下拉里选一个内置模型，或选「自定义模型…」填写模型 ID；两者互斥，只应用当前选中的那一个',
+  keySection: '所选模型的 API Key',
+  keyModel: '这个模型',
+  keyModelMissing: '请先选择或填写模型 ID',
+  keyRef: '密钥状态',
+  keyInput: 'API Key',
+  keyPlaceholder: '粘贴这个模型的 API Key（留空则不改动）',
+  keySaving: '保存中',
+  keyConfigured: '已配置',
+  keyMissing: '未配置',
+  keyInvalid: 'Key 格式不正确：请勿粘贴 NAME=value 或带引号的整行',
+  keyHint: '每个模型各自保存一把 API Key：切换模型会显示它自己已保存的密钥，点「应用」后模型与它的密钥一起生效；没有单独保存密钥的模型沿用当前生效的密钥',
+  providerUnregistered: '（未启用）',
+  providerEnableFailed: '启用提供商失败',
+  providerEnabling: '启用中',
+  settingsHint: '选择模型并填写它自己的 API Key，改动会作用于当前会话',
+  providerHint: '下拉包含所有已安装的内置方案；标注「未启用」的方案会在应用时自动启用',
 }
 
 /**

@@ -326,7 +326,6 @@ const THINKING_BODY: CSSProperties = {
   color: 'rgba(233,241,255,0.82)',
   fontFamily: 'inherit',
 }
-
 function rowStyle(role: PixiesMessageRole): CSSProperties {
   return { display: 'flex', justifyContent: role === 'user' ? 'flex-end' : 'flex-start' }
 }
@@ -603,6 +602,18 @@ function ThinkingDisclosure(props: ThinkingDisclosureProps): ReactElement {
   )
 }
 
+/** Gear glyph for the settings entry; the accessible name comes from copy. */
+function settingsIcon(): ReactElement {
+  return createElement('svg', {
+    width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+    strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+  },
+  createElement('circle', { cx: 12, cy: 12, r: 3 }),
+  createElement('path', { d: 'M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 8.5 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.6 8.5a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15.5 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.14.36.4.67.73.88.3.2.66.31 1.02.32H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1Z' }),
+  )
+}
+
+
 /**
  * Expanded mode: a draggable header, a scrollable conversation, and a composer
  * with text and voice input. Enter sends, Shift+Enter inserts a newline, and
@@ -680,6 +691,13 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
       style: HISTORY_BUTTON,
       onClick: () => { setHistoryOpen(!historyOpen) },
     }, historyIcon()),
+    createElement('button', {
+      type: 'button',
+      'data-testid': 'pixies-settings-toggle',
+      'aria-label': props.copy.settingsOpen,
+      style: HISTORY_BUTTON,
+      onClick: () => { props.bridge?.openSettings?.() },
+    }, settingsIcon()),
     createElement(PixiesCollapseButton, {
       label: props.copy.collapse,
       style: HEADER_BUTTON,

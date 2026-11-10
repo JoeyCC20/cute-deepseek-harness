@@ -57,6 +57,8 @@ export interface PixiesShellBridge {
   readonly dragBy: (deltaX: number, deltaY: number) => void
   /** Query the mode the main process owns (optional on older shells). */
   readonly getMode?: () => Promise<unknown>
+  /** Open the standalone settings window (optional on older shells). */
+  readonly openSettings?: () => void
   /** Finish a drag gesture (optional on older shells). */
   readonly endDrag?: () => void
   readonly onSpeech: (listener: (event: PixiesShellSpeechEvent) => void) => () => void
@@ -548,6 +550,8 @@ export function mountPixiesShell(
   sessionPanel?: PixiesSessionPanel,
 ): () => void {
   const root: Root = createRoot(container)
-  root.render(createElement(ShellPanel, { store, messages, bridge, onSendText: onFinalTranscript, sessionPanel }))
+  root.render(createElement(ShellPanel, {
+    store, messages, bridge, onSendText: onFinalTranscript, sessionPanel,
+  }))
   return () => { root.unmount() }
 }

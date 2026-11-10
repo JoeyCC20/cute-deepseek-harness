@@ -47,6 +47,8 @@ import { PixiesVoiceController, type PixiesVoiceEvent } from './voice.ts'
 
 const SCHEME = 'dsh-app'
 const WINDOW_SIZE = { width: 420, height: 640 }
+/** The standalone settings window is a normal document window, not a floating overlay. */
+const SETTINGS_SIZE = { width: 900, height: 680 }
 const MINI_SIZE = { width: 112, height: 112 }
 const SCREEN_MARGIN = 12
 const MINI_MARGIN = 8
@@ -555,12 +557,56 @@ async function main(): Promise<void> {
 
   let quitting = false
   let pixiesWindow: Electron.BrowserWindow | undefined
+  let settingsWindow: Electron.BrowserWindow | undefined
   // The Remote Event WebSocket bypasses `protocol.handle`, so it needs its own
-  // Host authentication (Desktop does exactly this for its main window).
+  // Host authentication (Desktop does exactly this for its main window). Both
+  // the character window and the settings window use the same boot-time cookie.
   session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['ws://127.0.0.1/*'] }, (details, callback) => {
-    callback(pixiesWebSocketHeaders(details, hostReady.url, hostCookie, pixiesWindow?.webContents.id))
+    const roleId = pixiesWindow?.webContents.id
+    const settingsId = settingsWindow?.webContents.id
+    const id = details.webContentsId !== undefined && details.webContentsId === settingsId
+      ? settingsId
+      : roleId
+    callback(pixiesWebSocketHeaders(details, hostReady.url, hostCookie, id))
   })
   const preload = fileURLToPath(new URL('./preload-app.cjs', import.meta.url))
+
+  /**
+   * Open (or focus) the standalone settings window. The query selects the
+   * settings-only face of the pixies client; both windows share the Host's
+   * index injections, cookie, and Remote Event gateway.
+   */
+  const openSettingsWindow = (): void => {
+    if (settingsWindow !== undefined && !settingsWindow.isDestroyed()) {
+      settingsWindow.show()
+      settingsWindow.focus()
+      return
+    }
+    const window = new BrowserWindow({
+      width: SETTINGS_SIZE.width,
+      height: SETTINGS_SIZE.height,
+      show: false,
+      title: 'Pixies 设置',
+      autoHideMenuBar: true,
+      webPreferences: {
+        preload,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        webSecurity: true,
+      },
+    })
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    window.webContents.on('will-navigate', (event, url) => {
+      if (new URL(url).protocol !== `${SCHEME}:`) event.preventDefault()
+    })
+    window.on('closed', () => { settingsWindow = undefined })
+    settingsWindow = window
+    void window.loadURL(`${SCHEME}://app/index.html?pixiesSettings=1`)
+    window.show()
+  }
+  ipcMain.handle('pixies:settings:open', () => { openSettingsWindow() })
+
   const deps: PixiesChromeDeps = {
     createWindow: (): PixiesWindowLike => {
       const window = new BrowserWindow({

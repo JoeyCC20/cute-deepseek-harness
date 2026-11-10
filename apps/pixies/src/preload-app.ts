@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('dshDesktopBoot', {
 contextBridge.exposeInMainWorld('dshPixies', {
   expand: (): void => { void ipcRenderer.invoke('pixies:window:expand') },
   collapse: (): void => { void ipcRenderer.invoke('pixies:window:collapse') },
+  /** Open the standalone settings window. */
+  openSettings: (): void => { void ipcRenderer.invoke('pixies:settings:open') },
   /** The mode the main process actually owns; the renderer reconciles on mount. */
   getMode: (): Promise<unknown> => ipcRenderer.invoke('pixies:window:mode'),
   startSpeech: (): void => { void ipcRenderer.invoke('pixies:speech:start') },
