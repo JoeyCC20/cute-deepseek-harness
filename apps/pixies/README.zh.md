@@ -44,7 +44,9 @@ profile）、`electron-user-data`，以及自动补齐的 `office-skills`。启�
   （`speech/PixiesSpeech.swift`）：partial 转写填充"聆听中"气泡，final 转写作为一条消息发出。
   首次使用会触发 macOS 麦克风与语音识别授权弹窗。`build:speech` 会把 `speech/Info.plist`
   内嵌进 helper 并做 ad-hoc 签名；开发启动器通过 LaunchServices 启动 Electron，让 TCC 把授权
-  归给 Pixies 自己的 bundle，而不是启动它的 IDE 或终端。
+  归给 Pixies 自己的 bundle，而不是启动它的 IDE 或终端。启动器的可执行文件是指向 Electron
+  二进制的符号链接（用 shell 脚本会导致菜单栏状态项不可见），开发环境与日志路径通过 argv
+  交给 `src/pixies-keychain.cjs`。
 - `Cmd/Ctrl+Shift+J` 无需点击即可发起语音指令：迷你头像切换为红色脉冲光环，表示 Swift 识别器
   正在接受指令；再按一次结束本轮并送出已识别的草稿。从提交指令到首条回复之间，头像改为蓝色
   旋转思考光环，长时间的模型调用不会看起来像卡住。`Cmd/Ctrl+Shift+K` 是展开/收起切换：按一次
@@ -68,10 +70,10 @@ profile）、`electron-user-data`，以及自动补齐的 `office-skills`。启�
   规整与可见的合成失败事件。
 - `speech/PixiesSpeech.swift` — Swift 语音 CLI（`probe` / `listen` / `speak`）。
 - `speech/Info.plist` — 内嵌进 helper 的 TCC 用途说明，构建时做 ad-hoc 签名。
-- `scripts/launch-services.ts` — 负责承载应用隐私授权的 LaunchServices 开发启动器。
+- `scripts/launch-services.ts` — 负责承载应用隐私授权的 LaunchServices 开发启动器，并把 Electron 链接为 bundle 可执行文件。
 - `src/host-process.ts` / `src/host-protocol.ts` — desktop 帧管道载体的逐字副本。
 - `src/icon.ts` — 运行时确定性生成托盘红点与蜘蛛面具 template PNG。
-- `src/pixies-keychain.cjs` — 预启动凭证注入（构建时由脚本复制进 `lib/`）。
+- `src/pixies-keychain.cjs` — 预启动凭证注入与开发启动参数处理（构建时由脚本复制进 `lib/`）。
 - `scripts/dev.ts` — 构建 + 语音 helper 重编译 + 复用一次性项目 + LaunchServices 启动器。
 - `scripts/stage.ts` — profile/bundle 装配与 Office-skill 资产补齐。
 - `tests/` — chrome facade、转发器、图标、凭证注入与语音控制器的单元测试。

@@ -72,25 +72,31 @@ async function launchElectron(projectDir: string): Promise<void> {
     `--inspect=127.0.0.1:${String(mainPort)}`,
     `--remote-debugging-port=${String(rendererPort)}`,
     `--user-data-dir=${userData}`,
-    APP_ROOT,
   ]
   // A direct spawn inherits the IDE/terminal as its TCC responsible process.
   // When that app lacks NSSpeechRecognitionUsageDescription, macOS aborts the
   // speech helper on its first authorization request. LaunchServices assigns
-  // the prompts to our own bundle, which declares both usage strings.
+  // the prompts to our own bundle, which declares both usage strings. The
+  // launcher's executable must be Electron itself (see launch-services.ts),
+  // so its environment and log paths travel through argv instead of a script.
   if (process.platform === 'darwin') {
     let launcher: ReturnType<typeof writeDevLauncher> | undefined
     try {
-      launcher = writeDevLauncher(join(BUILD_ROOT, 'dev-launcher'), electron, args, environment, APP_ROOT)
+      launcher = writeDevLauncher(join(BUILD_ROOT, 'dev-launcher'), electron, environment)
     } catch (error) {
       console.warn(`pixies development: LaunchServices launcher unavailable (${error instanceof Error ? error.message : String(error)}); falling back to a direct launch`)
     }
     if (launcher !== undefined) {
-      await launchViaLaunchServices(launcher.app, launcher.log)
+      await launchViaLaunchServices(launcher.app, launcher.log, [
+        ...args,
+        `--pixies-dev-env=${launcher.envFile}`,
+        `--pixies-dev-log=${launcher.log}`,
+        APP_ROOT,
+      ])
       return
     }
   }
-  await run(electron, args, APP_ROOT, environment)
+  await run(electron, [...args, APP_ROOT], APP_ROOT, environment)
 }
 
 /** True when the Swift helper is absent or older than its sources. */

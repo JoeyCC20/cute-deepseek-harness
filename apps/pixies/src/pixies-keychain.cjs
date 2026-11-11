@@ -17,6 +17,11 @@
  * Order is intentional: explicit files win over shell rc, and we never
  * overwrite a value that is already in the environment (Launch Services DID
  * pass something through — that takes priority).
+ *
+ * The dev launcher passes `--pixies-dev-env=<json>` and
+ * `--pixies-dev-log=<path>` for the same reason: its bundle executable is the
+ * Electron binary itself, so no shell script can seed the environment or
+ * redirect stdout/stderr. Those flags are applied here before anything else.
  */
 'use strict'
 
@@ -83,9 +88,65 @@ function parse(text) {
   return out
 }
 
+/** Dev launcher flags that replace the removed shell script's setup work. */
+const LAUNCHER_FLAGS = /^--pixies-dev-(env|log)=(.+)$/
+
+/**
+ * @param {string[]} argv - process arguments.
+ * @returns {{ envFile?: string, logFile?: string }} recognized launcher flags.
+ */
+function launcherFlags(argv = process.argv) {
+  const out = {}
+  for (const arg of argv) {
+    const match = LAUNCHER_FLAGS.exec(arg)
+    if (match === null) continue
+    if (match[1] === 'env') out.envFile = match[2]
+    else out.logFile = match[2]
+  }
+  return out
+}
+
+/**
+ * LaunchServices discards a GUI app's stdout/stderr. The dev launcher asks us
+ * to tee both into its log so `dev.ts` can keep streaming them to the terminal.
+ * @param {string} file - append-only log path.
+ */
+function redirectLog(file) {
+  try {
+    const stream = fs.createWriteStream(file, { flags: 'a' })
+    for (const name of ['stdout', 'stderr']) {
+      const target = process[name]
+      const write = target.write.bind(target)
+      target.write = (chunk, ...rest) => {
+        stream.write(chunk)
+        return write(chunk, ...rest)
+      }
+    }
+  } catch {
+    // Diagnostics must never take the app down.
+  }
+}
+
 function inject() {
+  const { envFile, logFile } = launcherFlags()
+  if (logFile !== undefined) redirectLog(logFile)
   let injected = 0
   const sources = []
+  if (envFile !== undefined) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(envFile, 'utf8'))
+      if (typeof parsed === 'object' && parsed !== null) {
+        sources.push(envFile)
+        for (const [name, value] of Object.entries(parsed)) {
+          if (typeof value !== 'string' || process.env[name] !== undefined) continue
+          process.env[name] = value
+          injected += 1
+        }
+      }
+    } catch {
+      // A missing dev environment file only means a normal packaged launch.
+    }
+  }
   for (const file of sourceCandidates()) {
     let text
     try {
@@ -104,4 +165,4 @@ function inject() {
   return { injected, sources }
 }
 
-module.exports = { injectCredentials: inject, parse, sourceCandidates }
+module.exports = { injectCredentials: inject, parse, sourceCandidates, launcherFlags }

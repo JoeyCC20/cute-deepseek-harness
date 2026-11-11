@@ -54,7 +54,9 @@ already present in the environment. `DEEPSEEK_API_KEY` is required for replies.
   listening bubble, and a final transcript is sent as a prompt. First use triggers macOS microphone
   and speech-recognition prompts. `build:speech` embeds `speech/Info.plist` into the helper and
   ad-hoc signs it; the dev launcher starts Electron through LaunchServices so TCC attributes those
-  prompts to a Pixies bundle rather than the IDE or terminal that spawned it.
+  prompts to a Pixies bundle rather than the IDE or terminal that spawned it. The launcher's
+  executable is a symlink to the Electron binary — a shell-script launcher leaves the menu-bar
+  tray invisible — and passes its environment/log paths to `src/pixies-keychain.cjs` via argv.
 - `Cmd/Ctrl+Shift+J` starts a voice command without any click: the mini avatar switches to a red
   pulsing listening ring while the Swift recognizer accepts the instruction, and a second press ends
   the round and sends the recognized draft. From that submit until the first reply the avatar shows a
@@ -82,10 +84,10 @@ already present in the environment. `DEEPSEEK_API_KEY` is required for replies.
   cancellation, speakable-text reduction, and visible synthesis errors.
 - `speech/PixiesSpeech.swift` — the Swift speech CLI (`probe` / `listen` / `speak`).
 - `speech/Info.plist` — TCC usage descriptions embedded in the helper and ad-hoc signed by the build.
-- `scripts/launch-services.ts` — LaunchServices dev launcher that owns the app's privacy prompts.
+- `scripts/launch-services.ts` — LaunchServices dev launcher: owns the app's privacy prompts and links Electron as the bundle executable.
 - `src/host-process.ts` / `src/host-protocol.ts` — verbatim copies of the desktop frame-pipe carrier.
 - `src/icon.ts` — deterministic runtime PNGs for the tray dot and the spider-mask template icon.
-- `src/pixies-keychain.cjs` — pre-boot credential injection (copied into `lib/` by the build).
+- `src/pixies-keychain.cjs` — pre-boot credential injection and dev-launcher argv setup (copied into `lib/` by the build).
 - `scripts/dev.ts` — build + speech-helper rebuild + disposable-project reuse + LaunchServices launcher.
 - `scripts/stage.ts` — profile/bundle staging and Office-skill asset restoration.
 - `tests/` — unit tests for the chrome facade, forwarder, icons, keychain, and speech controller.

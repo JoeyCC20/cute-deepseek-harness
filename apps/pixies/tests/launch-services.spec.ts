@@ -1,14 +1,13 @@
 /** LaunchServices dev launcher and speech-helper privacy manifest tests. */
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readlinkSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  devLauncherEnvironment,
   devLauncherInfoPlist,
-  devLauncherScript,
   PIXIES_DEV_BUNDLE_ID,
-  shellQuote,
   writeDevLauncher,
 } from '../scripts/launch-services.ts'
 
@@ -21,15 +20,8 @@ function temporaryDirectory(): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
-})
-
-describe('shellQuote', () => {
-  it('quotes spaces and re-opens embedded single quotes', () => {
-    expect(shellQuote('')).toBe("''")
-    expect(shellQuote('/tmp/a b')).toBe("'/tmp/a b'")
-    expect(shellQuote("it's")).toBe("'it'\\''s'")
-  })
 })
 
 describe('devLauncherInfoPlist', () => {
@@ -42,54 +34,48 @@ describe('devLauncherInfoPlist', () => {
   })
 })
 
-describe('devLauncherScript', () => {
-  it('re-execs Electron with the environment, arguments, and a log file', () => {
-    const script = devLauncherScript(
-      '/Applications/Electron.app/Contents/MacOS/Electron',
-      ['--user-data-dir=/tmp/pixies data', '/repo/apps/pixies'],
-      { DSH_HOME: '/tmp/home', OPTIONAL: undefined, WITH_QUOTE: "it's" },
-      '/tmp/pixies/electron.log',
-      '/repo/apps/pixies',
-    )
-    expect(script.startsWith('#!/bin/sh\n')).toBe(true)
-    expect(script).toContain("cd '/repo/apps/pixies' || exit 1")
-    expect(script).toContain('exec env ')
-    expect(script).toContain("'DSH_HOME=/tmp/home'")
-    expect(script).toContain("'WITH_QUOTE=it'\\''s'")
-    expect(script).not.toContain('OPTIONAL')
-    expect(script).toContain("'--user-data-dir=/tmp/pixies data'")
-    expect(script).toContain("'/repo/apps/pixies'")
-    expect(script).toContain(">> '/tmp/pixies/electron.log' 2>&1")
-    expect(script.endsWith('\n')).toBe(true)
+describe('devLauncherEnvironment', () => {
+  it('serializes defined variables as JSON with one trailing newline', () => {
+    const json = devLauncherEnvironment({ DSH_HOME: '/tmp/home', OPTIONAL: undefined, WITH_QUOTE: "it's" })
+    expect(JSON.parse(json)).toEqual({ DSH_HOME: '/tmp/home', WITH_QUOTE: "it's" })
+    expect(json.endsWith('\n')).toBe(true)
+    expect(json).not.toContain('OPTIONAL')
   })
 })
 
 describe('writeDevLauncher', () => {
-  it('writes a signed, executable bundle and truncates the log', () => {
+  it('links the Electron binary as the bundle executable and writes the dev environment', () => {
     const directory = temporaryDirectory()
     const paths = writeDevLauncher(
       directory,
       '/Applications/Electron',
-      ['--inspect=9239'],
       { DSH_HOME: '/tmp/home' },
-      '/repo/apps/pixies',
       () => undefined,
     )
     expect(paths.app).toBe(join(directory, 'PixiesDev.app'))
     expect(paths.log).toBe(join(directory, 'electron.log'))
+    expect(paths.envFile).toBe(join(directory, 'dev-env.json'))
     expect(readFileSync(join(paths.app, 'Contents', 'Info.plist'), 'utf8'))
       .toContain('NSSpeechRecognitionUsageDescription')
     expect(readFileSync(join(paths.app, 'Contents', 'PkgInfo'), 'utf8')).toBe('APPL????')
-    const launcher = join(paths.app, 'Contents', 'MacOS', 'launcher')
-    expect(readFileSync(launcher, 'utf8')).toContain("'DSH_HOME=/tmp/home'")
-    expect(statSync(launcher).mode & 0o111).not.toBe(0)
+    // A shell-script executable makes LaunchServices withhold the NSStatusItem,
+    // so the bundle must link the real Electron binary instead.
+    expect(readlinkSync(join(paths.app, 'Contents', 'MacOS', 'launcher'))).toBe('/Applications/Electron')
+    expect(JSON.parse(readFileSync(paths.envFile, 'utf8'))).toEqual({ DSH_HOME: '/tmp/home' })
     expect(readFileSync(paths.log, 'utf8')).toBe('')
   })
 
-  it('fails loud when the bundle cannot be signed', () => {
+  it('still produces a usable bundle when ad-hoc signing fails', () => {
     const directory = temporaryDirectory()
-    expect(() => writeDevLauncher(directory, '/Applications/Electron', [], {}, '/repo/apps/pixies', () => 'no identity'))
-      .toThrow('launcher codesign failed: no identity')
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    const paths = writeDevLauncher(
+      directory,
+      '/Applications/Electron',
+      {},
+      () => 'no identity',
+    )
+    expect(readlinkSync(join(paths.app, 'Contents', 'MacOS', 'launcher'))).toBe('/Applications/Electron')
+    expect(stderr).toHaveBeenCalledWith('pixies development: launcher ad-hoc signing skipped (no identity)\n')
   })
 })
 

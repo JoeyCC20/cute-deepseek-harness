@@ -674,7 +674,11 @@ async function main(): Promise<void> {
         { type: 'separator' },
         { label: '退出 Pixies', click: () => { quitting = true; app.quit() } },
       ])
-      tray.on('right-click', () => { menu.popup() })
+      // A macOS status item needs an attached context menu to stay visible,
+      // and a text label as a fallback when menu-bar setups hide template
+      // images: without it, hiding the floating icon leaves no visible entry.
+      tray.setContextMenu(menu)
+      tray.setTitle('Pixies')
       return tray
     },
     registerShortcut: (accelerator, callback) => globalShortcut.register(accelerator, callback),

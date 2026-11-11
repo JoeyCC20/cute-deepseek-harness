@@ -7,9 +7,10 @@ import { describe, it } from 'vitest'
 import { createRequire } from 'node:module'
 
 const require_ = createRequire(import.meta.url)
-const { parse, sourceCandidates } = require_('../src/pixies-keychain.cjs') as {
+const { parse, sourceCandidates, launcherFlags } = require_('../src/pixies-keychain.cjs') as {
   parse: (text: string) => Record<string, string>
   sourceCandidates: (cwd?: string, explicit?: string) => string[]
+  launcherFlags: (argv?: string[]) => { envFile?: string; logFile?: string }
 }
 
 describe('pixies-keychain parser', () => {
@@ -67,5 +68,21 @@ describe('pixies-keychain source discovery', () => {
     const files = sourceCandidates('/repo/apps/pixies', undefined)
     assert.equal(files[0], '/repo/apps/pixies/.env')
     assert.ok(files.some(file => file.endsWith('.config/dsh/env')))
+  })
+})
+
+describe('pixies-keychain dev launcher flags', () => {
+  it('reads the environment and log paths from argv', () => {
+    assert.deepEqual(launcherFlags([
+      'electron',
+      '--inspect=9239',
+      '--pixies-dev-env=/tmp/dev-env.json',
+      '--pixies-dev-log=/tmp/electron.log',
+      '/repo/apps/pixies',
+    ]), { envFile: '/tmp/dev-env.json', logFile: '/tmp/electron.log' })
+  })
+
+  it('ignores unrelated arguments', () => {
+    assert.deepEqual(launcherFlags(['electron', '--user-data-dir=/tmp/u', '/repo/apps/pixies']), {})
   })
 })
