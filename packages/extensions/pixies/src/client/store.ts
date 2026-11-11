@@ -17,6 +17,8 @@ export interface PixiesMessage {
   readonly text: string
   readonly mood: PixiesMood
   readonly at: number
+  /** Replayed from a session log; these entries are never spoken aloud. */
+  readonly historical?: boolean
 }
 
 /** The fields a caller supplies when publishing an entry. */
@@ -81,6 +83,8 @@ export interface PixiesStore {
   readonly settleThinking: (sessionId: string, reasoning: string | undefined) => void
   /** Reset every field and notify listeners. */
   readonly clear: () => void
+  /** Replace the visible window with one session's replayed history in a single notification. */
+  readonly hydrate: (messages: readonly PixiesMessage[]) => void
 }
 
 /**
@@ -180,6 +184,14 @@ export function createPixiesStore(): PixiesStore {
       pendingSession = undefined
       thinking = undefined
       messages = []
+      emit()
+    },
+    hydrate: (next) => {
+      latest = undefined
+      interaction = undefined
+      pendingSession = undefined
+      thinking = undefined
+      messages = next.slice(-MAX_MESSAGES)
       emit()
     },
   }

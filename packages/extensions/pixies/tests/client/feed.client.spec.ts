@@ -35,6 +35,28 @@ describe('feedSessionEvent', () => {
     expect(store.getState().latest).toBeUndefined()
   })
 
+  it('folds human user messages only when replaying history', () => {
+    const store = createPixiesStore()
+    const body = {
+      id: 'user-1', role: 'user',
+      content: [{ type: 'text', text: '帮我查一下' }],
+      source: { kind: 'user' },
+    }
+    feedSessionEvent(store, 'session-1', event('user/message', 2, body))
+    expect(store.getState().messages).toEqual([])
+    feedSessionEvent(store, 'session-1', event('user/message', 2, body), true)
+    expect(store.getState().messages).toMatchObject([{ role: 'user', text: '帮我查一下' }])
+  })
+
+  it('skips plugin-authored user messages during replay', () => {
+    const store = createPixiesStore()
+    feedSessionEvent(store, 'session-1', event('user/message', 2, {
+      content: [{ type: 'text', text: '压缩摘要' }],
+      source: { kind: 'plugin', plugin: 'compact' },
+    }), true)
+    expect(store.getState().messages).toEqual([])
+  })
+
   it('turn/start marks the session pending, turn/end clears it', () => {
     const store = createPixiesStore()
     feedSessionEvent(store, 'session-1', event('turn/start', 1, { turn: 1 }))

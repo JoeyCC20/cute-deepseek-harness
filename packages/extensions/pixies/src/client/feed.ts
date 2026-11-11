@@ -95,17 +95,54 @@ function turnFailure(event: SessionEventLike): string | undefined {
 }
 
 /**
+ * Read a human-authored prompt from a `user/message` wire payload. Plugin
+ * sources (checkpoints, compaction summaries) are not conversation entries.
+ * @param event - one user/message event.
+ * @returns the prompt text, or undefined for a non-human or empty payload.
+ */
+function userText(event: SessionEventLike): string | undefined {
+  const data: unknown = event.data
+  if (typeof data !== 'object' || data === null) return undefined
+  const source: unknown = Reflect.get(data, 'source')
+  if (typeof source !== 'object' || source === null || Reflect.get(source, 'kind') !== 'user') return undefined
+  const content: unknown = Reflect.get(data, 'content')
+  if (!Array.isArray(content)) return undefined
+  let text = ''
+  for (const block of content as readonly unknown[]) {
+    if (typeof block !== 'object' || block === null) continue
+    const candidate = block as TextBlockLike
+    if (candidate.type !== 'text' || typeof candidate.text !== 'string') continue
+    text = text === '' ? candidate.text : `${text}\n${candidate.text}`
+  }
+  return text.trim() === '' ? undefined : text
+}
+
+/**
  * Feed one session event into the store: assistant/message becomes the
  * character's speech; assistant/live-chunk reasoning deltas stream into the
  * collapsible thinking block; turn/start begins a thinking round, turn/end (or
  * a follow-up assistant/message) ends it. Thinking is the gap between the user
  * sending a prompt and the LLM producing its first visible reply — without
  * an explicit signal the bubble looks frozen during a multi-second call.
+ * Live prompts are already appended locally, so `user/message` is folded only
+ * when replaying a session's history.
  * @param store - the Pixies store to publish into.
  * @param sessionId - the session that produced the event.
  * @param event - one session event from a follow stream or recorded replay.
+ * @param includeUser - fold human user/message events; true only for replay.
  */
-export function feedSessionEvent(store: PixiesStore, sessionId: string, event: SessionEventLike): void {
+export function feedSessionEvent(
+  store: PixiesStore,
+  sessionId: string,
+  event: SessionEventLike,
+  includeUser = false,
+): void {
+  if (event.type === 'user/message') {
+    if (!includeUser) return
+    const text = userText(event)
+    if (text !== undefined) store.appendMessage({ role: 'user', text })
+    return
+  }
   if (event.type === 'turn/start') {
     store.beginThinking(sessionId)
     return

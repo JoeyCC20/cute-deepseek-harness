@@ -607,6 +607,10 @@ async function main(): Promise<void> {
   }
   ipcMain.handle('pixies:settings:open', () => { openSettingsWindow() })
 
+  // Only a voice-command round started while the icon was hidden shows a
+  // temporary icon. Launch, tray clicks, shortcuts, drags and expands are all
+  // explicit and keep the icon visible until the user hides it.
+  let autoDismissIcon = false
   const deps: PixiesChromeDeps = {
     createWindow: (): PixiesWindowLike => {
       const window = new BrowserWindow({
@@ -639,6 +643,7 @@ async function main(): Promise<void> {
       window.on('close', (event) => {
         if (!quitting) {
           event.preventDefault()
+          autoDismissIcon = false
           window.hide()
         }
       })
@@ -701,11 +706,15 @@ async function main(): Promise<void> {
       livePlacement[dragged.mode] = { x: dragged.x, y: dragged.y }
       savePixiesWindowPlacement(livePlacement)
     },
+    // Any show/hide from the tray, shortcuts or IPC is an explicit origin;
+    // beginVoiceCommand re-marks the one temporary case right after show().
+    onVisibilityChange: () => { autoDismissIcon = false },
   })
   // Renderer-driven window modes and the speech subprocess (phase 3).
   const notifyMode = (mode: string): void => { pixiesWindow?.webContents.send('pixies:mode', mode) }
   ipcMain.handle('pixies:window:mode', () => chrome.mode)
   ipcMain.handle('pixies:window:expand', () => {
+    autoDismissIcon = false
     chrome.setMode('expanded')
     notifyMode('expanded')
     pixiesWindow?.focus()
@@ -760,11 +769,28 @@ async function main(): Promise<void> {
       console.warn(`[pixies] drag ignored: non-finite delta (${String(deltaX)}, ${String(deltaY)})`)
       return
     }
+    autoDismissIcon = false
     try {
       chrome.dragBy(deltaX, deltaY)
     } catch (error) {
       console.error(`[pixies] dragBy failed at (${String(deltaX)}, ${String(deltaY)}):`, error)
     }
+  })
+  /** Right-click "hide" returns the floating icon to the menu bar. */
+  ipcMain.handle('pixies:icon:hide', () => {
+    autoDismissIcon = false
+    chrome.hide()
+  })
+  /**
+   * The renderer reports the end of a round (listening → thinking → reply
+   * playback). Only an icon the voice shortcut showed from a hidden window is
+   * dismissed; a user-shown icon stays put.
+   */
+  ipcMain.handle('pixies:icon:dismiss-auto', () => {
+    if (!autoDismissIcon) return false
+    autoDismissIcon = false
+    chrome.hide()
+    return true
   })
   /**
    * Cmd/Ctrl+Shift+J: one press opens a voice-command round. Feedback is sent
@@ -773,7 +799,15 @@ async function main(): Promise<void> {
    * round and delivers whatever the recognizer already transcribed.
    */
   const beginVoiceCommand = (): void => {
-    chrome.show()
+    const wasHidden = !chrome.window.isVisible()
+    if (wasHidden) {
+      // A shortcut wake shows only the mini avatar as a round indicator; the
+      // renderer dismisses it once the round finishes.
+      chrome.setMode('mini')
+      notifyMode('mini')
+      chrome.show()
+      autoDismissIcon = true
+    }
     voice.cancel()
     if (speech.active) {
       speech.stop()

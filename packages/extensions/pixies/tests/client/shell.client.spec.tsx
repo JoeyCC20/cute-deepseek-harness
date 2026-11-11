@@ -173,9 +173,18 @@ function reasoningChunk(seq: number, text: string): SessionEventLikeEntry {
 }
 
 /** A catalog fixture with morning, afternoon, and older sessions. */
-function sessionPanelFixture(): {
+function sessionPanelFixture(opts: {
+  createError?: Error
+  createBlocker?: Promise<void>
+  removeError?: Error
+  removeBlocker?: Promise<void>
+  hiddenIds?: readonly string[]
+} = {}): {
   panel: PixiesSessionPanel
   selected: string[]
+  created: SessionId[]
+  removed: string[]
+  hidden: string[]
   setIds: (ids: readonly string[]) => void
 } {
   const today = new Date()
@@ -199,22 +208,72 @@ function sessionPanelFixture(): {
     jobsBySession: {},
   } as unknown as SessionListState
   const listeners = new Set<() => void>()
+  const publish = (): void => {
+    for (const listener of [...listeners]) listener()
+  }
   const selected: string[] = []
+  const created: SessionId[] = []
+  const removed: string[] = []
+  const hidden: string[] = [...(opts.hiddenIds ?? [])]
+  let currentSelected = sid('a')
   const panel: PixiesSessionPanel = {
     getSnapshot: () => state,
+    hiddenIds: () => hidden.map(sid),
     subscribe: (listener) => {
       listeners.add(listener)
       return () => { listeners.delete(listener) }
     },
-    selectedId: () => sid('a'),
-    select: (id) => { selected.push(id) },
+    selectedId: () => currentSelected,
+    select: (id) => {
+      selected.push(id)
+      currentSelected = id
+      publish()
+    },
+    create: async () => {
+      if (opts.createBlocker !== undefined) await opts.createBlocker
+      if (opts.createError !== undefined) throw opts.createError
+      const id = sid(`created-${String(created.length + 1)}`)
+      created.push(id)
+      // The real service publishes the catalog row before resolving, so the
+      // selection switch can address the new id immediately.
+      const summary = {
+        id, displayTitle: '新建的会话', running: false, blank: true, retainedBy: {}, updatedAt: Date.now(),
+      }
+      state = {
+        ...state,
+        ids: [id, ...state.ids],
+        byId: { ...state.byId, [id]: summary },
+      }
+      currentSelected = id
+      publish()
+      return id
+    },
+    remove: async (id) => {
+      removed.push(id)
+      if (opts.removeBlocker !== undefined) await opts.removeBlocker
+      if (opts.removeError !== undefined) throw opts.removeError
+      hidden.push(id)
+      if (currentSelected === id) {
+        const next = state.ids.find(candidate => candidate !== id && !hidden.includes(candidate))
+        if (next !== undefined) currentSelected = next
+      }
+      publish()
+    },
   }
   return {
     panel,
     selected,
+    created,
+    removed,
+    hidden,
     setIds: (ids) => {
-      state = { ...state, ids: ids.map(sid) }
-      for (const listener of [...listeners]) listener()
+      const byId: Record<string, unknown> = {}
+      for (const id of ids) {
+        const summary = summaries[id as keyof typeof summaries]
+        if (summary !== undefined) byId[sid(id)] = summary
+      }
+      state = { ...state, ids: ids.map(sid), byId } as unknown as SessionListState
+      publish()
     },
   }
 }
@@ -237,6 +296,22 @@ function userMessage(seq: number): SessionEventLikeEntry {
   return {
     type: 'event',
     event: { type: 'user/message', seq, time: 0, data: {} },
+  } as unknown as SessionEventLikeEntry
+}
+
+/** One durable human-authored prompt, foldable when replaying a session. */
+function humanMessage(seq: number, text: string): SessionEventLikeEntry {
+  return {
+    type: 'event',
+    event: {
+      type: 'user/message',
+      seq,
+      time: 0,
+      data: {
+        id: `user-${String(seq)}`, role: 'user',
+        content: [{ type: 'text', text }], source: { kind: 'user' },
+      },
+    },
   } as unknown as SessionEventLikeEntry
 }
 
@@ -263,18 +338,18 @@ describe('pickPixiesSessionId', () => {
 })
 
 describe('createPixiesSessionSelection', () => {
-  it('notifies subscribers only when the choice actually changes', () => {
+  it('notifies subscribers on every choice, including a repeated one', () => {
     const selection = createPixiesSessionSelection()
     let calls = 0
     const off = selection.subscribe(() => { calls += 1 })
     expect(selection.get()).toBeUndefined()
     selection.set(sid('a'))
     selection.set(sid('a'))
-    expect(calls).toBe(1)
+    expect(calls).toBe(2)
     expect(selection.get()).toBe('a')
     off()
     selection.set(sid('b'))
-    expect(calls).toBe(1)
+    expect(calls).toBe(2)
   })
 })
 
@@ -437,6 +512,32 @@ describe('followPixiesSession', () => {
     follow.dispose()
   })
 
+  it('replays the selected session history instead of leaving the conversation blank', async () => {
+    const store = createPixiesStore()
+    const selection = createPixiesSessionSelection()
+    const a = fakeEventSource()
+    const b = fakeEventSource([humanMessage(1, '之前的问题'), assistantMessage(2, '之前的回答')])
+    const { sessions } = fakeSessions(
+      listState(['a', 'b'], 'a'),
+      new Map([['a', a.source], ['b', b.source]]),
+    )
+
+    const follow = followPixiesSession(sessions, store, selection)
+    await flushFollow()
+    expect(store.getState().messages).toEqual([])
+
+    selection.set(sid('b'))
+    await flushFollow()
+    expect(store.getState().messages.map(message => message.text)).toEqual(['之前的问题', '之前的回答'])
+    expect(store.getState().messages.every(message => message.historical === true)).toBe(true)
+    expect(store.getState().latest).toBeUndefined()
+
+    b.append(assistantMessage(3, '实时补充'))
+    expect(store.getState().messages.at(-1)?.text).toBe('实时补充')
+    expect(store.getState().messages.at(-1)?.historical).toBeUndefined()
+    follow.dispose()
+  })
+
   it('seeds transient rows already in the initial window', async () => {
     const store = createPixiesStore()
     const a = fakeEventSource([reasoningChunk(2.5, '已有')])
@@ -522,8 +623,10 @@ function fakeBridge(options: { readonly mode?: PixiesShellMode } = {}): {
   emitVoiceCommand: (event: unknown) => void
   speechListenerCount: () => number
   modeListenerCount: () => number
+  iconCalls: string[]
 } {
   const calls: string[] = []
+  const iconCalls: string[] = []
   const speechListeners: Array<(event: PixiesShellSpeechEvent) => void> = []
   const modeListeners: Array<(mode: PixiesShellMode) => void> = []
   const voiceListeners: Array<(event: unknown) => void> = []
@@ -558,10 +661,13 @@ function fakeBridge(options: { readonly mode?: PixiesShellMode } = {}): {
       return () => { remove(commandListeners, listener) }
     },
     dragBy: () => {},
+    hide: () => { iconCalls.push('hide') },
+    dismissAutoIcon: () => { iconCalls.push('dismissAutoIcon') },
   }
   return {
     bridge,
     calls,
+    iconCalls,
     emitMode: (mode) => { for (const listener of [...modeListeners]) listener(mode) },
     emitSpeech: (event) => { for (const listener of [...speechListeners]) listener(event) },
     emitVoiceReply: (event) => { for (const listener of [...voiceListeners]) listener(event) },
@@ -752,12 +858,12 @@ describe('mountPixiesShell with the shell bridge (phase 3)', () => {
     container.remove()
   })
 
-  it('stores the history drawer collapsed and groups sessions by morning/afternoon/older', () => {
+  it('opens history as an overlay popup that never takes a conversation slot', () => {
     const store = createPixiesStore()
     const container = document.createElement('div')
     document.body.appendChild(container)
     const { bridge, emitMode } = fakeBridge()
-    const { panel, selected, setIds } = sessionPanelFixture()
+    const { panel, setIds } = sessionPanelFixture()
     let disposer: (() => void) | undefined
     act(() => {
       disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, undefined, panel)
@@ -770,11 +876,15 @@ describe('mountPixiesShell with the shell bridge (phase 3)', () => {
     })
 
     const toggle = (): Element => container.querySelector('[data-testid="pixies-history-toggle"]')!
-    expect(container.querySelector('[data-testid="pixies-history-panel"]')).toBeNull()
+    const backdrop = (): Element | null => container.querySelector('[data-testid="pixies-history-backdrop"]')
+    const drawer = (): Element => container.querySelector('[data-testid="pixies-history-panel"]')!
+    expect(backdrop()).toBeNull()
     expect(toggle().getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('[role="log"]')).not.toBeNull()
 
     fireEvent.click(toggle())
-    const drawer = (): Element => container.querySelector('[data-testid="pixies-history-panel"]')!
+    expect((backdrop() as HTMLElement).style.position).toBe('absolute')
+    expect(container.querySelector('[role="log"]')).not.toBeNull()
     expect(drawer().textContent).toContain(defaultPixiesMessages.groupMorning)
     expect(drawer().textContent).toContain(defaultPixiesMessages.groupAfternoon)
     expect(drawer().textContent).toContain(defaultPixiesMessages.groupEarlier)
@@ -786,19 +896,323 @@ describe('mountPixiesShell with the shell bridge (phase 3)', () => {
     expect(contextRows[0]?.textContent).toContain(defaultPixiesMessages.roleUser)
     expect(contextRows[1]?.textContent).toContain(defaultPixiesMessages.roleAssistant)
     expect(contextRows[2]?.textContent).toContain(defaultPixiesMessages.roleSystem)
+    expect(drawer().querySelector('[data-testid="pixies-new-session"]')).toBeNull()
+    expect(container.querySelector('[data-testid="pixies-new-session"]')).not.toBeNull()
 
-    fireEvent.click(rows[0]!)
-    expect(selected).toEqual([])
-    fireEvent.click(rows[1]!)
-    expect(selected).toEqual(['b'])
-    expect(store.getState().messages).toEqual([])
+    fireEvent.click(backdrop()!)
+    expect(backdrop()).toBeNull()
+    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(toggle())
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(backdrop()).toBeNull()
+
+    fireEvent.click(toggle())
+    fireEvent.click(container.querySelector('[data-testid="pixies-history-close"]')!)
+    expect(backdrop()).toBeNull()
 
     act(() => { setIds(['a', 'b']) })
+    fireEvent.click(toggle())
     expect(drawer().querySelectorAll('[data-testid="pixies-session-row"]')).toHaveLength(2)
+    act(() => { disposer?.() })
+    container.remove()
+  })
 
-    fireEvent.click(container.querySelector('[data-testid="pixies-history-close"]')!)
-    expect(container.querySelector('[data-testid="pixies-history-panel"]')).toBeNull()
-    expect(toggle().getAttribute('aria-expanded')).toBe('false')
+  it('returns to the conversation after picking a session from the popup', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitMode } = fakeBridge()
+    const { panel, selected } = sessionPanelFixture()
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, undefined, panel)
+    })
+    act(() => { emitMode('expanded') })
+    act(() => { store.appendMessage({ role: 'user', text: '上一轮问题' }) })
+    const toggle = (): Element => container.querySelector('[data-testid="pixies-history-toggle"]')!
+    fireEvent.click(toggle())
+    const rows = container.querySelectorAll('[data-testid="pixies-session-row"]')
+    fireEvent.click(rows[1]!)
+    expect(selected).toEqual(['b'])
+    expect(container.querySelector('[data-testid="pixies-history-backdrop"]')).toBeNull()
+    expect(store.getState().messages).toEqual([])
+    fireEvent.click(toggle())
+    expect(container.querySelectorAll('[data-testid="pixies-session-row"]')[1]?.hasAttribute('data-active')).toBe(true)
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('creates a fresh session from the always-visible header action', async () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitMode } = fakeBridge()
+    let unblock: (() => void) | undefined
+    const blocker = new Promise<void>((resolve) => { unblock = () => { resolve() } })
+    const { panel, created } = sessionPanelFixture({ createBlocker: blocker })
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, undefined, panel)
+    })
+    act(() => { emitMode('expanded') })
+    act(() => { store.appendMessage({ role: 'user', text: '上一轮问题' }) })
+    expect(container.querySelector('[data-testid="pixies-history-backdrop"]')).toBeNull()
+
+    const button = (): HTMLButtonElement => container.querySelector('[data-testid="pixies-new-session"]')!
+    expect(button().textContent).toBe(defaultPixiesMessages.newSessionShort)
+    expect(button().getAttribute('aria-label')).toBe(defaultPixiesMessages.newSession)
+    await act(async () => { fireEvent.click(button()) })
+    expect(button().disabled).toBe(true)
+    expect(button().textContent).toBe(defaultPixiesMessages.newSessionPending)
+    fireEvent.click(button())
+    expect(created).toEqual([])
+
+    await act(async () => { unblock?.() })
+    expect(created).toEqual([sid('created-1')])
+    expect(button().disabled).toBe(false)
+    expect(button().textContent).toBe(defaultPixiesMessages.newSessionShort)
+    expect(store.getState().messages).toEqual([])
+    expect(container.querySelector('[data-testid="pixies-new-session-error"]')).toBeNull()
+    fireEvent.click(container.querySelector('[data-testid="pixies-history-toggle"]')!)
+    const fresh = [...container.querySelectorAll('[data-testid="pixies-session-row"]')]
+      .find(row => row.textContent?.includes('新建的会话'))
+    expect(fresh?.hasAttribute('data-active')).toBe(true)
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('keeps the conversation and reports a failed session creation outside the popup', async () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitMode } = fakeBridge()
+    const { panel } = sessionPanelFixture({ createError: new Error('host refused') })
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, undefined, panel)
+    })
+    act(() => { emitMode('expanded') })
+    act(() => { store.appendMessage({ role: 'user', text: '上一轮问题' }) })
+    fireEvent.click(container.querySelector('[data-testid="pixies-history-toggle"]')!)
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="pixies-new-session"]')!)
+    })
+    expect(container.querySelector('[data-testid="pixies-history-backdrop"]')).toBeNull()
+    const error = container.querySelector('[data-testid="pixies-new-session-error"]')?.textContent
+    expect(error).toContain(defaultPixiesMessages.newSessionFailed)
+    expect(error).toContain('host refused')
+    expect(store.getState().messages).toHaveLength(1)
+    const button = container.querySelector('[data-testid="pixies-new-session"]') as HTMLButtonElement
+    expect(button.disabled).toBe(false)
+    expect(button.textContent).toBe(defaultPixiesMessages.newSessionShort)
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('asks for a second confirmation before removing a session row', async () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitMode } = fakeBridge()
+    const { panel, selected, removed } = sessionPanelFixture()
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, undefined, panel)
+    })
+    act(() => { emitMode('expanded') })
+    fireEvent.click(container.querySelector('[data-testid="pixies-history-toggle"]')!)
+
+    const deletes = (): Element[] => [...container.querySelectorAll('[data-testid="pixies-session-delete"]')]
+    const confirm = (): Element | null => container.querySelector('[data-testid="pixies-session-delete-confirm"]')
+    expect(deletes()).toHaveLength(3)
+    fireEvent.click(deletes()[1]!)
+    expect(confirm()?.textContent).toContain(defaultPixiesMessages.deleteSessionConfirm)
+    expect(removed).toEqual([])
+    expect(selected).toEqual([])
+
+    fireEvent.click(container.querySelector('[data-testid="pixies-session-delete-cancel"]')!)
+    expect(confirm()).toBeNull()
+    expect(removed).toEqual([])
+
+    fireEvent.click(deletes()[1]!)
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="pixies-session-delete-accept"]')!)
+    })
+    expect(removed).toEqual([sid('b')])
+    expect(confirm()).toBeNull()
+    expect(container.querySelectorAll('[data-testid="pixies-session-row"]')).toHaveLength(2)
+    expect(selected).toEqual([])
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('hides archived sessions and moves the follow off a deleted current session', async () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitMode } = fakeBridge()
+    const { panel, removed } = sessionPanelFixture({ hiddenIds: ['c'] })
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, undefined, panel)
+    })
+    act(() => { emitMode('expanded') })
+    fireEvent.click(container.querySelector('[data-testid="pixies-history-toggle"]')!)
+    const rows = (): Element[] => [...container.querySelectorAll('[data-testid="pixies-session-row"]')]
+    expect(rows()).toHaveLength(2)
+    expect(rows().some(row => row.getAttribute('aria-label') === '更早的会话')).toBe(false)
+    expect(rows()[0]?.hasAttribute('data-active')).toBe(true)
+
+    fireEvent.click(container.querySelectorAll('[data-testid="pixies-session-delete"]')[0]!)
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="pixies-session-delete-accept"]')!)
+    })
+    expect(removed).toEqual([sid('a')])
+    expect(rows()).toHaveLength(1)
+    expect(rows()[0]?.getAttribute('aria-label')).toBe('下午的会话')
+    expect(rows()[0]?.hasAttribute('data-active')).toBe(true)
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('reports a failed removal without hiding the row', async () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitMode } = fakeBridge()
+    const { panel, removed } = sessionPanelFixture({ removeError: new Error('archive refused') })
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, undefined, panel)
+    })
+    act(() => { emitMode('expanded') })
+    fireEvent.click(container.querySelector('[data-testid="pixies-history-toggle"]')!)
+    fireEvent.click(container.querySelectorAll('[data-testid="pixies-session-delete"]')[1]!)
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="pixies-session-delete-accept"]')!)
+    })
+    expect(container.querySelector('[data-testid="pixies-session-delete-error"]')?.textContent)
+      .toContain('archive refused')
+    expect(container.querySelectorAll('[data-testid="pixies-session-row"]')).toHaveLength(3)
+    expect(removed).toEqual([sid('b')])
+    expect(container.querySelector('[data-testid="pixies-session-delete-confirm"]')).toBeNull()
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('disables delete actions while a removal is in flight', async () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, emitMode } = fakeBridge()
+    let unblock: (() => void) | undefined
+    const blocker = new Promise<void>((resolve) => { unblock = () => { resolve() } })
+    const { panel, removed } = sessionPanelFixture({ removeBlocker: blocker })
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge, undefined, panel)
+    })
+    act(() => { emitMode('expanded') })
+    fireEvent.click(container.querySelector('[data-testid="pixies-history-toggle"]')!)
+    fireEvent.click(container.querySelectorAll('[data-testid="pixies-session-delete"]')[0]!)
+    await act(async () => {
+      fireEvent.click(container.querySelector('[data-testid="pixies-session-delete-accept"]')!)
+    })
+    const button = (): HTMLButtonElement => container.querySelector('[data-testid="pixies-session-delete"]')!
+    expect(button().disabled).toBe(true)
+    expect(removed).toEqual([sid('a')])
+    await act(async () => { unblock?.() })
+    expect(button().disabled).toBe(false)
+    expect(container.querySelectorAll('[data-testid="pixies-session-row"]')).toHaveLength(2)
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('hides the icon from the right-click menu in both window modes', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, iconCalls, emitMode } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
+    const shell = (): Element => container.querySelector('[data-pixies-shell]')!
+    expect(container.querySelector('[data-testid="pixies-icon-menu"]')).toBeNull()
+
+    fireEvent.contextMenu(shell())
+    expect(container.querySelector('[data-testid="pixies-icon-menu"]')?.textContent)
+      .toContain(defaultPixiesMessages.hideIcon)
+    fireEvent.click(container.querySelector('[data-testid="pixies-icon-hide"]')!)
+    expect(iconCalls).toEqual(['hide'])
+    expect(container.querySelector('[data-testid="pixies-icon-menu"]')).toBeNull()
+
+    act(() => { emitMode('expanded') })
+    fireEvent.contextMenu(shell())
+    expect(container.querySelector('[data-testid="pixies-icon-menu"]')).not.toBeNull()
+    fireEvent.click(container.querySelector('[data-testid="pixies-icon-hide"]')!)
+    expect(iconCalls).toEqual(['hide', 'hide'])
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('closes the icon menu on an outside click without hiding the icon', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, iconCalls } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
+    fireEvent.contextMenu(container.querySelector('[data-pixies-shell]')!)
+    expect(container.querySelector('[data-testid="pixies-icon-menu"]')).not.toBeNull()
+    fireEvent.click(container.querySelector('[data-testid="pixies-icon-menu-backdrop"]')!)
+    expect(container.querySelector('[data-testid="pixies-icon-menu"]')).toBeNull()
+    expect(iconCalls).toEqual([])
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('dismisses a shortcut-shown icon when an empty voice round ends', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, iconCalls, emitVoiceCommand } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
+    act(() => { emitVoiceCommand({ type: 'start' }) })
+    expect(iconCalls).toEqual([])
+    act(() => { emitVoiceCommand({ type: 'stop' }) })
+    expect(iconCalls).toEqual(['dismissAutoIcon'])
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('keeps the icon through listening, thinking and playback before dismissing', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, iconCalls, emitVoiceCommand, emitSpeech, emitVoiceReply } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
+    act(() => { emitVoiceCommand({ type: 'start' }) })
+    act(() => { emitSpeech({ type: 'final', text: '你好' }) })
+    expect(iconCalls).toEqual([])
+    act(() => { emitVoiceReply({ type: 'speaking' }) })
+    act(() => { store.appendMessage({ role: 'assistant', text: '你好呀' }) })
+    expect(iconCalls).toEqual([])
+    act(() => { emitVoiceReply({ type: 'done' }) })
+    expect(iconCalls).toEqual(['dismissAutoIcon'])
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('does not offer the icon menu outside the Electron shell', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, undefined) })
+    fireEvent.contextMenu(container.querySelector('[data-pixies-shell]')!)
+    expect(container.querySelector('[data-testid="pixies-icon-menu"]')).toBeNull()
     act(() => { disposer?.() })
     container.remove()
   })
@@ -812,8 +1226,10 @@ describe('mountPixiesShell with the shell bridge (phase 3)', () => {
     act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
     act(() => { emitMode('expanded') })
     fireEvent.click(container.querySelector('[data-testid="pixies-history-toggle"]')!)
-    expect(container.querySelector('[data-testid="pixies-history-panel"]')?.textContent)
-      .toContain(defaultPixiesMessages.noSessions)
+    const popup = container.querySelector('[data-testid="pixies-history-panel"]')
+    expect(popup?.textContent).toContain(defaultPixiesMessages.noSessions)
+    expect(popup?.querySelector('[data-testid="pixies-new-session"]')).toBeNull()
+    expect((container.querySelector('[data-testid="pixies-new-session"]') as HTMLButtonElement).disabled).toBe(true)
     act(() => { disposer?.() })
     container.remove()
   })

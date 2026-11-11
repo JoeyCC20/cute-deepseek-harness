@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld('dshPixies', {
   collapse: (): void => { void ipcRenderer.invoke('pixies:window:collapse') },
   /** Open the standalone settings window. */
   openSettings: (): void => { void ipcRenderer.invoke('pixies:settings:open') },
+  /** Right-click action: hide the floating icon back to the tray. */
+  hide: (): void => { void ipcRenderer.invoke('pixies:icon:hide') },
+  /** End a shortcut-triggered temporary icon after its round finishes. */
+  dismissAutoIcon: (): void => { void ipcRenderer.invoke('pixies:icon:dismiss-auto') },
   /** The mode the main process actually owns; the renderer reconciles on mount. */
   getMode: (): Promise<unknown> => ipcRenderer.invoke('pixies:window:mode'),
   startSpeech: (): void => { void ipcRenderer.invoke('pixies:speech:start') },

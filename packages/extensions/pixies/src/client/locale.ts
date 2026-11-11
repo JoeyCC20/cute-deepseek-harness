@@ -69,6 +69,28 @@ export interface PixiesPanelMessages {
   readonly historyOpen?: string
   /** Accessible label of the button that closes the history drawer. */
   readonly historyClose?: string
+  /** Label of the button that starts a fresh session. */
+  readonly newSession?: string
+  /** Compact label for the always-visible header action. */
+  readonly newSessionShort?: string
+  /** Label while a fresh session is being created. */
+  readonly newSessionPending?: string
+  /** Prefix for a failed session creation. */
+  readonly newSessionFailed?: string
+  /** Per-row remove action label. */
+  readonly deleteSession?: string
+  /** Confirmation copy explaining what removal does. */
+  readonly deleteSessionConfirm?: string
+  /** Confirm action label. */
+  readonly deleteSessionAccept?: string
+  /** Cancel action label. */
+  readonly deleteSessionCancel?: string
+  /** Label while removal is in flight. */
+  readonly deleteSessionPending?: string
+  /** Prefix for a failed removal. */
+  readonly deleteSessionFailed?: string
+  /** Right-click action that returns the floating icon to the tray. */
+  readonly hideIcon?: string
   /** Section headline for the session list. */
   readonly sessions?: string
   /** Section headline for the current conversation's context. */
@@ -200,6 +222,17 @@ export const defaultPixiesMessages: PixiesResolvedMessages = {
   history: '历史会话',
   historyOpen: '展开历史会话',
   historyClose: '收起历史会话',
+  newSession: '新建会话',
+  newSessionShort: '新建',
+  newSessionPending: '创建中…',
+  newSessionFailed: '新建会话失败',
+  deleteSession: '删除会话',
+  deleteSessionConfirm: '确定从历史中移除该会话？会话记录会保留，可在设置中恢复。',
+  deleteSessionAccept: '删除',
+  deleteSessionCancel: '取消',
+  deleteSessionPending: '删除中…',
+  deleteSessionFailed: '删除会话失败',
+  hideIcon: '隐藏到通知栏',
   sessions: '会话',
   context: '本轮上下文',
   contextCount: '条消息',

@@ -53,6 +53,20 @@ describe('createPixiesStore', () => {
     expect(calls).toBe(1)
   })
 
+  it('hydrate replaces the visible window in one notification', () => {
+    const store = createPixiesStore()
+    store.speak(presentation('旧的'))
+    let calls = 0
+    store.subscribe(() => { calls += 1 })
+    store.hydrate([
+      { id: 'history-0', role: 'user', text: '问', mood: 'neutral', at: 1, historical: true },
+      { id: 'history-1', role: 'assistant', text: '答', mood: 'neutral', at: 2, historical: true },
+    ])
+    expect(calls).toBe(1)
+    expect(store.getState().latest).toBeUndefined()
+    expect(store.getState().messages.map(message => message.text)).toEqual(['问', '答'])
+  })
+
   it('clear resets every field', () => {
     const store = createPixiesStore()
     store.speak(presentation('a'))

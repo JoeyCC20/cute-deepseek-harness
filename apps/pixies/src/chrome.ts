@@ -85,6 +85,8 @@ export interface PixiesChromeOptions {
   readonly onDragged?: (position: { readonly mode: PixiesWindowMode; readonly x: number; readonly y: number }) => void
   /** Called once when a drag gesture ends; the app persists the placement here. */
   readonly onDragEnd?: (position: { readonly mode: PixiesWindowMode; readonly x: number; readonly y: number }) => void
+  /** Reports show/hide from every path (tray, shortcuts, IPC) so the app can track icon origin. */
+  readonly onVisibilityChange?: (visible: boolean) => void
 }
 
 /** The two window modes: a corner mini avatar and the full panel. */
@@ -253,8 +255,12 @@ export function createPixiesChrome(deps: PixiesChromeDeps, options: PixiesChrome
   const show = (): void => {
     window.show()
     window.focus()
+    options.onVisibilityChange?.(true)
   }
-  const hide = (): void => { window.hide() }
+  const hide = (): void => {
+    window.hide()
+    options.onVisibilityChange?.(false)
+  }
   const toggle = (): void => { if (window.isVisible()) hide(); else show() }
   tray.on('click', toggle)
   const accelerators = new Set<string>([options.accelerator])

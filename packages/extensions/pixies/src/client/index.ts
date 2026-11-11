@@ -9,6 +9,7 @@
  */
 
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 // Type-only: pulls the ctx.remote event surface and the credential/settings views.
 import type { CredentialInfo, RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
 // Type-only: pulls the ctx.sessions face for the session follow.
@@ -73,6 +74,15 @@ const PIXIES_SHELL_FLAG = '__DSH_PIXIES_SHELL__'
 /** Function-plugin identity for the client composition row. */
 export const name = 'pixies-client'
 
+/** The Workspace Controller projection that owns the archived-session set. */
+interface PixiesWorkspaceArchive {
+  readonly list: {
+    readonly getSnapshot: () => { readonly archivedSessionIds: readonly SessionId[] }
+    readonly subscribe: (listener: () => void) => () => void
+  }
+  readonly archiveSession: (id: SessionId) => Promise<void>
+}
+
 /** The reference source this plugin holds while the character follows a session. */
 declare module '@deepseek-ai/dsh-api-session-controller/client' {
   interface SessionReferenceSourceMap {
@@ -82,7 +92,7 @@ declare module '@deepseek-ai/dsh-api-session-controller/client' {
 }
 
 /** Required services: Remote Events plus the session/credentials/settings namespaces for the settings drawer, Sessions for the follow. */
-export const inject = ['remote', 'sessions', 'remote.session', 'remote.credentials', 'remote.settings', 'remote.llm']
+export const inject = ['remote', 'sessions', 'workspaces', 'remote.session', 'remote.credentials', 'remote.settings', 'remote.llm']
 
 /** The single in-window store shared by the observers and the shell panel. */
 export const pixiesStore = createPixiesStore()
@@ -98,15 +108,49 @@ let shellOverlay: HTMLDivElement | undefined
  */
 export function apply(ctx: ClientContext): void {
   const selection = createPixiesSessionSelection()
+  // The Host list is the whole catalog, including cold sessions from other
+  // workspaces. An extra refresh makes sure that baseline has arrived before
+  // the user first opens the history drawer.
+  void ctx.sessions.refresh().catch(() => {
+    // A failed refresh leaves the subscribed baseline intact; history still
+    // renders whatever the Host has already projected.
+  })
+  // ui-workspace shares this service; resolving it on demand keeps the shell
+  // mountable when the Workspace Controller has not been installed.
+  const archive = (): PixiesWorkspaceArchive | undefined =>
+    ctx.get('workspaces') as PixiesWorkspaceArchive | undefined
   const sessionPanel: PixiesSessionPanel = {
     getSnapshot: () => ctx.sessions.list.getSnapshot(),
+    hiddenIds: () => archive()?.list.getSnapshot().archivedSessionIds ?? [],
     subscribe: (listener) => {
       const offList = ctx.sessions.list.subscribe(listener)
       const offSelection = selection.subscribe(listener)
-      return () => { offList(); offSelection() }
+      const offArchive = archive()?.list.subscribe(listener)
+      return () => { offList(); offSelection(); offArchive?.() }
     },
     selectedId: () => pickPixiesSessionId(ctx.sessions.list.getSnapshot(), selection.get()),
     select: (id) => { selection.set(id) },
+    // create() publishes the catalog row before resolving, so the selection
+    // switch rebinds the follow onto an id the list can already address.
+    create: async () => {
+      const id = await ctx.sessions.create()
+      selection.set(id)
+      return id
+    },
+    remove: async (id) => {
+      const workspaces = archive()
+      if (workspaces === undefined) throw new Error('workspace controller is unavailable')
+      await workspaces.archiveSession(id)
+      // The Host session list still carries an archived id, so the follow must
+      // leave it explicitly instead of waiting for a catalog removal.
+      const hidden = new Set<string>(workspaces.list.getSnapshot().archivedSessionIds)
+      const state = ctx.sessions.list.getSnapshot()
+      if (pickPixiesSessionId(state, selection.get()) !== id) return
+      const next = state.ids.find(candidate => candidate !== id && !hidden.has(candidate))
+      if (next !== undefined) { selection.set(next); return }
+      const created = await ctx.sessions.create()
+      selection.set(created)
+    },
   }
   ctx.effect(() => () => { pixiesStore.clear() }, 'pixies-client: store teardown')
   ctx.remote.$on('approval/request', function (request, next) {

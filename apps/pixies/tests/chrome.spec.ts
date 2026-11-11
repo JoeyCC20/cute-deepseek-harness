@@ -171,6 +171,25 @@ describe('mini/expanded modes (phase 3)', () => {
       .toEqual({ x: 1344, y: 0 })
   })
 
+  it('reports every show/hide path to onVisibilityChange', () => {
+    const { deps, trayState, shortcutState } = bench()
+    const seen: boolean[] = []
+    const chrome = createPixiesChrome(deps, {
+      accelerator: 'CommandOrControl+Shift+P',
+      windowSize: { width: 420, height: 640 },
+      screenMargin: 12,
+      tooltip: 'Pixies',
+      onVisibilityChange: (visible) => { seen.push(visible) },
+    })
+    // Explicit show, explicit hide, two tray toggles, then the show shortcut.
+    chrome.show()
+    chrome.hide()
+    trayState.click()
+    trayState.click()
+    shortcutState.callback()
+    expect(seen).toEqual([true, false, true, false, true])
+  })
+
   it('starts mini and swaps geometry through setMode', () => {
     const { deps, windowState } = bench()
     const chrome = createPixiesChrome(deps, {

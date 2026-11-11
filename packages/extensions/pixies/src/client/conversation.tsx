@@ -6,7 +6,7 @@
  * @module @deepseek-ai/dsh-pixies/client/conversation
  */
 
-import { createElement, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type ReactElement } from 'react'
+import { createElement, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react'
 import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import {
@@ -51,6 +51,18 @@ export interface PixiesConversationProps {
   readonly selectedSessionId: SessionId | undefined
   /** Switch the followed session from the history drawer. */
   readonly onSelectSession: (id: SessionId) => void
+  /** Archived session ids the history popup must hide. */
+  readonly hiddenSessionIds: readonly SessionId[]
+  /** Remove a session from history after a confirmed action. */
+  readonly onRemoveSession: (id: SessionId) => Promise<void>
+  /** Whether a fresh session is being created. */
+  readonly newSessionPending: boolean
+  /** Failure text from the last session creation, or an empty string. */
+  readonly newSessionError: string
+  /** Create a fresh session and follow it. */
+  readonly onNewSession: () => void
+  /** Right-click on the floating icon opens the hide menu. */
+  readonly onContextMenu: (event: MouseEvent<HTMLDivElement>) => void
 }
 
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
@@ -128,6 +140,7 @@ const EXPANDED_ROOT: CSSProperties = {
   background: 'transparent',
 }
 const CARD: CSSProperties = {
+  position: 'relative',
   flex: 1,
   minHeight: 0,
   display: 'flex',
@@ -240,24 +253,96 @@ const HISTORY_BUTTON: CSSProperties = {
   alignItems: 'center',
   justifyContent: 'center',
 }
-const DRAWER: CSSProperties = {
+const HEADER_NEW_SESSION_BUTTON: CSSProperties = {
+  height: 30,
+  minWidth: 44,
   flexShrink: 0,
-  maxHeight: '46%',
+  padding: '0 8px',
+  border: '1px solid rgba(255,255,255,0.18)',
+  borderRadius: 10,
+  color: '#ffffff',
+  background: 'rgba(255,255,255,0.08)',
+  fontFamily: 'inherit',
+  fontSize: 11.5,
+  cursor: 'pointer',
+}
+/** Covers the conversation area only, so the header actions stay reachable. */
+const HISTORY_BACKDROP: CSSProperties = {
+  position: 'absolute',
+  top: 62,
+  left: 0,
+  right: 0,
+  bottom: 0,
+  zIndex: 20,
+  display: 'flex',
+  padding: 10,
+  background: 'rgba(5,7,13,0.62)',
+  backdropFilter: 'blur(5px)',
+}
+const HISTORY_POPUP: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
   overflowY: 'auto',
   padding: '10px 12px 12px',
-  borderBottom: '1px solid rgba(255,255,255,0.08)',
-  background: 'rgba(8,10,18,0.52)',
+  borderRadius: 16,
+  border: '1px solid rgba(255,255,255,0.14)',
+  background: 'rgba(12,14,24,0.98)',
+  boxShadow: '0 18px 44px rgba(0,0,0,0.55)',
   scrollbarWidth: 'thin',
+}
+const NEW_SESSION_ERROR: CSSProperties = {
+  flexShrink: 0,
+  padding: '6px 14px',
+  borderBottom: '1px solid rgba(255,138,143,0.22)',
+  background: 'rgba(255,138,143,0.08)',
+  color: '#ff8a8f',
+  fontSize: 11.5,
+  overflowWrap: 'anywhere',
+}
+const ICON_MENU_BACKDROP: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  zIndex: 100,
+  background: 'transparent',
+}
+const ICON_MENU: CSSProperties = {
+  position: 'absolute',
+  zIndex: 101,
+  minWidth: 104,
+  padding: 4,
+  borderRadius: 10,
+  border: '1px solid rgba(255,255,255,0.18)',
+  background: 'rgba(18,20,30,0.98)',
+  boxShadow: '0 12px 30px rgba(0,0,0,0.55)',
+}
+const ICON_MENU_BUTTON: CSSProperties = {
+  width: '100%',
+  padding: '6px 8px',
+  border: 'none',
+  borderRadius: 7,
+  background: 'transparent',
+  color: '#f4f5fa',
+  fontFamily: 'inherit',
+  fontSize: 12,
+  textAlign: 'left',
+  cursor: 'pointer',
 }
 const DRAWER_HEAD: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8 }
 const SECTION: CSSProperties = { fontSize: 10.5, opacity: 0.52, margin: '11px 2px 5px', letterSpacing: 0.4 }
+const SESSION_ROW_WRAPPER: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  flexWrap: 'wrap',
+  marginBottom: 4,
+}
 const SESSION_ROW: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 8,
-  width: '100%',
+  flex: 1,
+  minWidth: 0,
   boxSizing: 'border-box',
-  marginBottom: 4,
   padding: '7px 9px',
   borderRadius: 10,
   border: '1px solid transparent',
@@ -271,6 +356,54 @@ const SESSION_ROW: CSSProperties = {
 const SESSION_ROW_ACTIVE: CSSProperties = {
   border: '1px solid rgba(90,169,255,0.55)',
   background: 'rgba(90,169,255,0.14)',
+}
+const SESSION_DELETE_BUTTON: CSSProperties = {
+  flexShrink: 0,
+  width: 30,
+  height: 30,
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  padding: 0,
+  border: '1px solid transparent',
+  borderRadius: 10,
+  background: 'rgba(255,255,255,0.05)',
+  color: 'rgba(255,255,255,0.55)',
+  cursor: 'pointer',
+}
+const DELETE_CONFIRM_BAR: CSSProperties = {
+  width: '100%',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  flexWrap: 'wrap',
+  padding: '6px 8px',
+  borderRadius: 10,
+  border: '1px solid rgba(255,138,143,0.30)',
+  background: 'rgba(255,138,143,0.08)',
+}
+const DELETE_CONFIRM_TEXT: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  fontSize: 11,
+  color: '#ffb3b6',
+  overflowWrap: 'anywhere',
+}
+const DELETE_CONFIRM_BUTTON: CSSProperties = {
+  flexShrink: 0,
+  padding: '3px 8px',
+  border: '1px solid rgba(255,255,255,0.18)',
+  borderRadius: 8,
+  background: 'rgba(255,255,255,0.08)',
+  color: '#ffffff',
+  fontFamily: 'inherit',
+  fontSize: 11,
+  cursor: 'pointer',
+}
+const DELETE_CONFIRM_ACCEPT: CSSProperties = {
+  ...DELETE_CONFIRM_BUTTON,
+  background: '#c91520',
+  border: '1px solid #ff4b52',
 }
 const SESSION_TITLE: CSSProperties = {
   flex: 1,
@@ -412,6 +545,7 @@ export function PixiesMiniView(props: PixiesConversationProps): ReactElement {
     'data-speaking': props.speaking ? '' : undefined,
     ...drag.containerProps,
     style: { ...MINI_ROOT, ...drag.containerProps.style },
+    onContextMenu: props.onContextMenu,
   },
   createElement('button', {
     type: 'button',
@@ -470,16 +604,25 @@ function groupOf(updatedAt: number, now: number): SessionGroup {
   return updated.getHours() < 12 ? 'morning' : 'afternoon'
 }
 
-/** Read catalog rows in host order; a missing `byId` entry is skipped. */
-function sessionRows(list: SessionListState | undefined, now: number): readonly {
+/** Read every projected session, skipping ids the Workspace Controller archived. */
+function sessionRows(list: SessionListState | undefined, now: number, hidden: ReadonlySet<string>): readonly {
   readonly group: SessionGroup
   readonly summary: SessionSummary
 }[] {
   if (list === undefined) return []
   const rows: Array<{ readonly group: SessionGroup; readonly summary: SessionSummary }> = []
+  const seen = new Set<string>()
   for (const id of list.ids) {
     const summary: SessionSummary | undefined = list.byId[id]
-    if (summary !== undefined) rows.push({ group: groupOf(summary.updatedAt, now), summary })
+    if (summary === undefined || hidden.has(id)) continue
+    rows.push({ group: groupOf(summary.updatedAt, now), summary })
+    seen.add(id)
+  }
+  // The store also carries local fallback rows for live generations that the
+  // Host has not listed yet; dropping them hides real sessions from history.
+  for (const [id, summary] of Object.entries(list.byId)) {
+    if (seen.has(id) || hidden.has(id)) continue
+    rows.push({ group: groupOf(summary.updatedAt, now), summary })
   }
   return rows
 }
@@ -501,28 +644,99 @@ function historyIcon(): ReactElement {
   )
 }
 
-interface HistoryDrawerProps {
+/** Trash glyph for the per-session remove action; the accessible name comes from copy. */
+function deleteIcon(): ReactElement {
+  return createElement('svg', {
+    width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+    strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+  },
+  createElement('path', { d: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5' }),
+  )
+}
+
+/** Right-click menu for the floating icon; its only action returns it to the tray. */
+export interface PixiesIconMenuProps {
+  readonly copy: PixiesResolvedMessages
+  readonly x: number
+  readonly y: number
+  readonly onHide: () => void
+  readonly onClose: () => void
+}
+
+/** A transparent backdrop closes the menu on any outside click or second right-click. */
+export function PixiesIconMenu(props: PixiesIconMenuProps): ReactElement {
+  return createElement('div', {
+    'data-testid': 'pixies-icon-menu-backdrop',
+    style: ICON_MENU_BACKDROP,
+    onClick: props.onClose,
+    onContextMenu: (event: MouseEvent<HTMLDivElement>) => {
+      event.preventDefault()
+      props.onClose()
+    },
+  },
+  createElement('div', {
+    'data-testid': 'pixies-icon-menu',
+    style: { ...ICON_MENU, left: props.x, top: props.y },
+    onClick: (event: MouseEvent<HTMLDivElement>) => { event.stopPropagation() },
+  },
+  createElement('button', {
+    type: 'button',
+    'data-testid': 'pixies-icon-hide',
+    style: ICON_MENU_BUTTON,
+    onClick: props.onHide,
+  }, props.copy.hideIcon),
+  ),
+  )
+}
+
+interface HistoryPopupProps {
   readonly copy: PixiesResolvedMessages
   readonly list: SessionListState | undefined
+  readonly hiddenSessionIds: readonly SessionId[]
   readonly selectedId: SessionId | undefined
   readonly messages: readonly PixiesMessage[]
   readonly onSelect: (id: SessionId) => void
+  readonly onRemove: (id: SessionId) => Promise<void>
   readonly onClose: () => void
 }
 
 /**
- * The collapsible history surface: sessions grouped by morning/afternoon/older,
- * plus a preview of the visible conversation context. Both are read-only data
- * projections; selecting a row is the only mutation, owned by the shell.
+ * The history popup floats above the conversation instead of taking a flex
+ * slot away from the transcript. Each row owns a two-step remove action; the
+ * shell owns the removal and the follow switch.
  */
-function HistoryDrawer(props: HistoryDrawerProps): ReactElement {
-  const rows = sessionRows(props.list, Date.now())
+function HistoryPopup(props: HistoryPopupProps): ReactElement {
+  const [confirmId, setConfirmId] = useState<SessionId | undefined>(undefined)
+  const [pendingId, setPendingId] = useState<SessionId | undefined>(undefined)
+  const [removeError, setRemoveError] = useState('')
+  const rows = sessionRows(props.list, Date.now(), new Set<string>(props.hiddenSessionIds))
   const groups: readonly { readonly key: SessionGroup; readonly heading: string }[] = [
     { key: 'morning', heading: props.copy.groupMorning },
     { key: 'afternoon', heading: props.copy.groupAfternoon },
     { key: 'earlier', heading: props.copy.groupEarlier },
   ]
-  return createElement('div', { 'data-testid': 'pixies-history-panel', style: DRAWER },
+
+  const confirmRemove = async (id: SessionId): Promise<void> => {
+    setConfirmId(undefined)
+    setPendingId(id)
+    setRemoveError('')
+    try {
+      await props.onRemove(id)
+    } catch (error: unknown) {
+      setRemoveError(`${props.copy.deleteSessionFailed}: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setPendingId(undefined)
+    }
+  }
+
+  return createElement('div', {
+    'data-testid': 'pixies-history-backdrop',
+    style: HISTORY_BACKDROP,
+    onClick: (event: MouseEvent<HTMLDivElement>) => {
+      if (event.target === event.currentTarget) props.onClose()
+    },
+  },
+  createElement('div', { 'data-testid': 'pixies-history-panel', style: HISTORY_POPUP },
     createElement('div', { style: DRAWER_HEAD },
       createElement('div', { style: { ...TITLE, flex: 1 } }, props.copy.history),
       createElement('button', {
@@ -533,6 +747,10 @@ function HistoryDrawer(props: HistoryDrawerProps): ReactElement {
         onClick: props.onClose,
       }, historyIcon()),
     ),
+    removeError !== '' ? createElement('div', {
+      'data-testid': 'pixies-session-delete-error',
+      style: { ...DRAWER_NOTE, color: '#ff8a8f' },
+    }, removeError) : null,
     createElement('div', { style: SECTION }, props.copy.sessions),
     rows.length === 0 ? createElement('div', { style: DRAWER_NOTE }, props.copy.noSessions) : null,
     ...groups.map((group) => {
@@ -542,30 +760,63 @@ function HistoryDrawer(props: HistoryDrawerProps): ReactElement {
         createElement('div', { style: SECTION }, group.heading),
         ...members.map(({ summary }) => {
           const active = summary.id === props.selectedId
-          return createElement('button', {
-            key: summary.id,
-            type: 'button',
-            'data-testid': 'pixies-session-row',
-            'data-active': active ? '' : undefined,
-            'aria-current': active ? 'true' : undefined,
-            'aria-label': summary.displayTitle,
-            style: { ...SESSION_ROW, ...(active ? SESSION_ROW_ACTIVE : {}) },
-            onClick: () => { props.onSelect(summary.id) },
-          },
-          summary.running ? createElement('span', { style: RUNNING_DOT }) : null,
-          createElement('span', { style: SESSION_TITLE }, summary.displayTitle),
-          createElement('span', { style: SESSION_META }, new Date(summary.updatedAt).toLocaleTimeString()),
+          const pending = pendingId === summary.id
+          return createElement('div', { key: summary.id, style: SESSION_ROW_WRAPPER },
+            createElement('button', {
+              type: 'button',
+              'data-testid': 'pixies-session-row',
+              'data-active': active ? '' : undefined,
+              'aria-current': active ? 'true' : undefined,
+              'aria-label': summary.displayTitle,
+              style: { ...SESSION_ROW, ...(active ? SESSION_ROW_ACTIVE : {}) },
+              onClick: () => { props.onSelect(summary.id) },
+            },
+            summary.running ? createElement('span', { style: RUNNING_DOT }) : null,
+            createElement('span', { style: SESSION_TITLE }, summary.displayTitle),
+            createElement('span', { style: SESSION_META }, new Date(summary.updatedAt).toLocaleTimeString()),
+            ),
+            createElement('button', {
+              type: 'button',
+              'data-testid': 'pixies-session-delete',
+              'aria-label': props.copy.deleteSession,
+              title: props.copy.deleteSession,
+              disabled: props.list === undefined || pendingId !== undefined,
+              style: SESSION_DELETE_BUTTON,
+              onClick: () => { setConfirmId(summary.id); setRemoveError('') },
+            }, deleteIcon()),
+            confirmId === summary.id
+              ? createElement('div', {
+                'data-testid': 'pixies-session-delete-confirm',
+                style: DELETE_CONFIRM_BAR,
+              },
+              createElement('div', { style: DELETE_CONFIRM_TEXT }, props.copy.deleteSessionConfirm),
+              createElement('button', {
+                type: 'button',
+                'data-testid': 'pixies-session-delete-cancel',
+                style: DELETE_CONFIRM_BUTTON,
+                onClick: () => { setConfirmId(undefined) },
+              }, props.copy.deleteSessionCancel),
+              createElement('button', {
+                type: 'button',
+                'data-testid': 'pixies-session-delete-accept',
+                disabled: pending,
+                style: DELETE_CONFIRM_ACCEPT,
+                onClick: () => { void confirmRemove(summary.id) },
+              }, pending ? props.copy.deleteSessionPending : props.copy.deleteSessionAccept),
+              )
+              : null,
           )
         }),
       )
     }),
     createElement('div', { style: SECTION }, props.copy.context),
     createElement('div', { style: DRAWER_NOTE }, `${String(props.messages.length)} ${props.copy.contextCount}`),
-    ...props.messages.slice(-3).map(message => createElement('div', {
+    ...props.messages.map(message => createElement('div', {
       key: message.id,
       'data-testid': 'pixies-context-row',
       style: CONTEXT_ROW,
     }, `${roleName(message.role, props.copy)}: ${message.text}`)),
+  ),
   )
 }
 
@@ -639,11 +890,13 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
   }, [messages.length, live?.text, thinkingOpen ? props.state.thinking?.text : undefined])
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent): void => {
-      if (event.key === 'Escape') props.onCollapse()
+      if (event.key !== 'Escape') return
+      if (historyOpen) { setHistoryOpen(false); return }
+      props.onCollapse()
     }
     window.addEventListener('keydown', onKey)
     return () => { window.removeEventListener('keydown', onKey) }
-  }, [props.onCollapse])
+  }, [props.onCollapse, historyOpen])
 
   const onInputKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
@@ -655,6 +908,7 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
     'data-pixies-shell': '',
     'data-mode': 'expanded' as PixiesShellMode,
     style: EXPANDED_ROOT,
+    onContextMenu: props.onContextMenu,
   },
   createElement('div', { style: CARD },
     createElement('div', {
@@ -684,6 +938,17 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
     }),
     createElement('button', {
       type: 'button',
+      'data-testid': 'pixies-new-session',
+      'data-pending': props.newSessionPending ? '' : undefined,
+      'aria-label': props.copy.newSession,
+      'aria-busy': props.newSessionPending,
+      title: props.copy.newSession,
+      disabled: props.newSessionPending || props.sessionList === undefined,
+      style: HEADER_NEW_SESSION_BUTTON,
+      onClick: () => { props.onNewSession(); setHistoryOpen(false) },
+    }, props.newSessionPending ? props.copy.newSessionPending : props.copy.newSessionShort),
+    createElement('button', {
+      type: 'button',
       'data-testid': 'pixies-history-toggle',
       'data-open': historyOpen ? '' : undefined,
       'aria-expanded': historyOpen,
@@ -704,14 +969,13 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
       onClick: props.onCollapse,
     }),
     ),
-    historyOpen ? createElement(HistoryDrawer, {
-      copy: props.copy,
-      list: props.sessionList,
-      selectedId: props.selectedSessionId,
-      messages,
-      onSelect: props.onSelectSession,
-      onClose: () => { setHistoryOpen(false) },
-    }) : null,
+    props.newSessionError !== ''
+      ? createElement('div', {
+        'data-testid': 'pixies-new-session-error',
+        role: 'alert',
+        style: NEW_SESSION_ERROR,
+      }, props.newSessionError)
+      : null,
     createElement('div', { ref: listRef, role: 'log', style: HISTORY_STYLE },
       showWelcome ? createElement('div', { style: WELCOME },
         createElement(PixiesCharacter, { size: 76, glow: true }),
@@ -786,6 +1050,19 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
         style: VOICE_ERROR_HINT,
       }, props.voiceError) : null,
     ),
+    historyOpen ? createElement(HistoryPopup, {
+      copy: props.copy,
+      list: props.sessionList,
+      hiddenSessionIds: props.hiddenSessionIds,
+      selectedId: props.selectedSessionId,
+      messages,
+      onSelect: (id: SessionId) => {
+        props.onSelectSession(id)
+        setHistoryOpen(false)
+      },
+      onRemove: props.onRemoveSession,
+      onClose: () => { setHistoryOpen(false) },
+    }) : null,
   ),
   )
 }
