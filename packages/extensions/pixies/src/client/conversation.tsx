@@ -41,6 +41,10 @@ export interface PixiesConversationProps {
   readonly draft: string
   readonly onDraftChange: (value: string) => void
   readonly onSend: (text: string) => void
+  /** Whether a turn is running; the composer swaps Send for Stop. */
+  readonly taskRunning: boolean
+  /** Stop the running turn. */
+  readonly onStop: () => void
   readonly onExpand: () => void
   readonly onCollapse: () => void
   readonly onMicToggle: () => void
@@ -1026,23 +1030,36 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
           style: { ...ICON_BUTTON, background: props.listening ? '#d81e27' : 'rgba(255,255,255,0.10)' },
           onClick: props.onMicToggle,
         }),
-        createElement('button', {
-          type: 'button',
-          'data-testid': 'pixies-send',
-          'aria-label': props.copy.send,
-          disabled: props.draft.trim() === '',
-          style: {
-            ...SEND_BUTTON,
-            opacity: props.draft.trim() === '' ? 0.45 : 1,
-            cursor: props.draft.trim() === '' ? 'default' : 'pointer',
+        props.taskRunning
+          ? createElement('button', {
+            type: 'button',
+            'data-testid': 'pixies-stop',
+            'aria-label': props.copy.stop,
+            style: { ...SEND_BUTTON, cursor: 'pointer' },
+            onClick: props.onStop,
           },
-          onClick: () => { props.onSend(props.draft) },
-        },
-        createElement('svg', {
-          width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
-          strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
-        }, createElement('path', { d: 'M4 12h15M13 6l6 6-6 6' })),
-        ),
+          createElement('svg', {
+            width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+            strokeWidth: 2, 'aria-hidden': true,
+          }, createElement('rect', { x: 7, y: 7, width: 10, height: 10, rx: 1, fill: 'currentColor' })),
+          )
+          : createElement('button', {
+            type: 'button',
+            'data-testid': 'pixies-send',
+            'aria-label': props.copy.send,
+            disabled: props.draft.trim() === '',
+            style: {
+              ...SEND_BUTTON,
+              opacity: props.draft.trim() === '' ? 0.45 : 1,
+              cursor: props.draft.trim() === '' ? 'default' : 'pointer',
+            },
+            onClick: () => { props.onSend(props.draft) },
+          },
+          createElement('svg', {
+            width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
+            strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+          }, createElement('path', { d: 'M4 12h15M13 6l6 6-6 6' })),
+          ),
       ),
       createElement('div', { style: HINT }, props.copy.sendHint),
       props.voiceError !== '' ? createElement('div', {

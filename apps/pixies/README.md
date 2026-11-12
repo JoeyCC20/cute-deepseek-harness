@@ -22,8 +22,10 @@ pnpm run start:pixies      # reuse the prepared project and launch immediately
 Dev state lives under `apps/pixies/.pixies-build/development`: `home` (Harness home), `project`
 (disposable profile), `electron-user-data`, and `office-skills` (restored automatically). The window
 appears on launch; tray click toggles it, `Cmd/Ctrl+Shift+P` shows it, `Cmd/Ctrl+Shift+J` starts or
-ends a voice command, `Cmd/Ctrl+Shift+K` toggles the conversation panel, and the tray right-click menu
-offers show/hide, reset position, and quit. Set `DSH_PIXIES_OPEN_DEVTOOLS=1` to debug the renderer.
+ends a voice command that replaces the running turn, `Cmd/Ctrl+Shift+Q` starts or ends one that queues
+behind it, `Cmd/Ctrl+Shift+S` stops the running turn, `Cmd/Ctrl+Shift+K` toggles the conversation panel,
+and the tray right-click menu offers show/hide, reset position, and quit. Set
+`DSH_PIXIES_OPEN_DEVTOOLS=1` to debug the renderer.
 
 Credentials come from the repository root `.env` (`DSH_PIXIES_ENV_FILE` in development), from
 `~/.config/dsh/env`, or from your shell rc files; the pre-boot injector never overwrites a value
@@ -57,12 +59,19 @@ already present in the environment. `DEEPSEEK_API_KEY` is required for replies.
   prompts to a Pixies bundle rather than the IDE or terminal that spawned it. The launcher's
   executable is a symlink to the Electron binary — a shell-script launcher leaves the menu-bar
   tray invisible — and passes its environment/log paths to `src/pixies-keychain.cjs` via argv.
-- `Cmd/Ctrl+Shift+J` starts a voice command without any click: the mini avatar switches to a red
-  pulsing listening ring while the Swift recognizer accepts the instruction, and a second press ends
-  the round and sends the recognized draft. From that submit until the first reply the avatar shows a
-  blue rotating thinking ring instead, so a long model call never looks idle. `Cmd/Ctrl+Shift+K`
-  toggles the conversation panel: one press shows and expands it, a second press collapses it back to
-  the mini avatar. Both shortcuts are owned by the tray chrome and released on quit.
+- `Cmd/Ctrl+Shift+J` starts a voice command without any click: the running turn is cancelled on that
+  first press, the mini avatar switches to a red pulsing listening ring while the Swift recognizer
+  accepts the instruction, and a second press ends the round and sends the recognized draft as a new
+  queued prompt. `Cmd/Ctrl+Shift+Q` runs the same round without cancelling: the transcript joins the
+  session's existing inbox queue and runs after the current turn. `Cmd/Ctrl+Shift+S` just cancels the
+  running turn (and discards a live voice round); pending queued work survives cancellation. From a
+  submit until the first reply the avatar shows a blue rotating thinking ring instead, so a long model
+  call never looks idle. `Cmd/Ctrl+Shift+K` toggles the conversation panel: one press shows and expands
+  it, a second press collapses it back to the mini avatar. All shortcuts are owned by the tray chrome
+  and released on quit.
+- While a turn runs, the composer's Send button becomes a red Stop button. Stopping from there, from
+  `Cmd/Ctrl+Shift+S`, or from a replacing `Cmd/Ctrl+Shift+J` round clears the thinking state immediately
+  and leaves a visible "task stopped" line in the transcript.
 - Assistant replies are returned by voice first through the same Swift helper's `speak` subcommand
   (`AVSpeechSynthesizer`), with the voice language chosen from the reply and a speaker toggle in the
   panel header to mute them. Spoken output is reduced to prose (code, links, and URLs are dropped)

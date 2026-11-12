@@ -18,6 +18,9 @@ import {
   isPixiesApiKeyValid, modelCredentialRef,
   type PixiesModelSettings, type PixiesModelState,
 } from './models.ts'
+import {
+  readPanelSettings, resolvePixiesPanelBridge, type PixiesPanelSettingsView,
+} from './panel-bridge.ts'
 
 /** The shell style makes the document transparent; the settings window paints its own surface. */
 const PAGE_STYLE = 'position:fixed;inset:0;width:100vw;height:100vh;overflow:auto;background:#f7f8fa;color:#1f2329;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;font-size:14px;line-height:1.5'
@@ -53,6 +56,77 @@ const CUSTOM_MODEL_CHOICE = '__pixies_custom_model__'
 interface SettingsPageProps {
   readonly copy: PixiesResolvedMessages
   readonly settings: PixiesModelSettings
+}
+
+/** Auto-hide presets, in milliseconds. */
+const PANEL_HIDE_PRESETS: readonly number[] = [5000, 10_000, 30_000]
+
+/** Preferences for the standalone result panel, owned by the Electron shell. */
+function PixiesPanelSettingsSection(props: { readonly copy: PixiesResolvedMessages }): ReactElement {
+  const [view, setView] = useState<PixiesPanelSettingsView>({ enabled: true, autoHideMs: 10_000 })
+  useEffect(() => {
+    const bridge = resolvePixiesPanelBridge()
+    if (bridge === undefined) return undefined
+    let active = true
+    void bridge.getPanelSettings().then((value) => {
+      const next = readPanelSettings(value)
+      if (active && next !== undefined) setView(next)
+    }).catch((_settingsUnavailable: unknown) => {
+      // The main process owns defaults; an unavailable IPC leaves them in place.
+    })
+    const off = bridge.onPanelSettings((value) => {
+      const next = readPanelSettings(value)
+      if (next !== undefined) setView(next)
+    })
+    return () => { active = false; off() }
+  }, [])
+
+  const update = (next: PixiesPanelSettingsView): void => {
+    setView(next)
+    const bridge = resolvePixiesPanelBridge()
+    if (bridge === undefined) return
+    void bridge.setPanelSettings(next).catch((_settingsRejected: unknown) => {
+      // A read-only settings file leaves the last validated snapshot in effect.
+    })
+  }
+  const hideValue = view.autoHideMs === null ? 'never' : String(view.autoHideMs)
+  const custom = view.autoHideMs !== null && !PANEL_HIDE_PRESETS.includes(view.autoHideMs)
+
+  return createElement('div', null,
+    createElement('div', { style: SECTION }, props.copy.panelSection),
+    createElement('div', { style: ROW },
+      createElement('label', {
+        style: LABEL, htmlFor: 'pixies-panel-enabled',
+      }, props.copy.panelEnable),
+      createElement('input', {
+        id: 'pixies-panel-enabled', type: 'checkbox',
+        'data-testid': 'pixies-panel-enabled', checked: view.enabled,
+        onChange: (event: ChangeEvent<HTMLInputElement>) => {
+          update({ ...view, enabled: event.currentTarget.checked })
+        },
+      })),
+    createElement('div', { style: ROW },
+      createElement('label', {
+        style: LABEL, htmlFor: 'pixies-panel-auto-hide',
+      }, props.copy.panelAutoHide),
+      createElement('select', {
+        id: 'pixies-panel-auto-hide', style: INPUT,
+        'data-testid': 'pixies-panel-auto-hide', value: hideValue,
+        onChange: (event: ChangeEvent<HTMLSelectElement>) => {
+          const value = event.currentTarget.value
+          update({ ...view, autoHideMs: value === 'never' ? null : Number(value) })
+        },
+      },
+      ...PANEL_HIDE_PRESETS.map(ms => createElement('option', {
+        key: ms, value: String(ms),
+      }, `${String(ms / 1000)}${props.copy.panelSeconds}`)),
+      ...custom
+        ? [createElement('option', { key: 'custom', value: hideValue },
+          `${String(Number(hideValue) / 1000)}${props.copy.panelSeconds}`)]
+        : [],
+      createElement('option', { key: 'never', value: 'never' }, props.copy.panelHideNever))),
+    createElement('div', { style: NOTE }, props.copy.panelHint),
+  )
 }
 
 /** One exclusive model choice together with the API key owned by that model. */
@@ -244,6 +318,7 @@ export function PixiesSettingsPage(props: SettingsPageProps): ReactElement {
           : state.enabling !== null ? props.copy.providerEnabling : props.copy.modelApply),
       ),
     ),
+    createElement(PixiesPanelSettingsSection, { key: 'panel-settings', copy: props.copy }),
   )
 }
 

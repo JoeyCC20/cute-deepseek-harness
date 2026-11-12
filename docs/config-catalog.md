@@ -1860,6 +1860,26 @@ export interface Config {
 
 Source: [`packages/preset/persona/src/index.ts:30`](../packages/preset/persona/src/index.ts)
 
+<a id="deepseek-aidsh-pixies"></a>
+
+## `@deepseek-ai/dsh-pixies`
+
+```ts config-catalog
+/** Plugin config. All fields optional — the schema supplies the defaults. */
+export interface Config {
+  /** The character that speaks the presentations; an open set of ids. */
+  readonly character?: string
+  /** Master switch; when false the plugin only registers the service. */
+  readonly enabled?: boolean
+  /** Observe (and delegate) the approval/request waterfall. */
+  readonly observeApproval?: boolean
+  /** Observe (and delegate) the user-questions/request waterfall. */
+  readonly observeQuestions?: boolean
+}
+```
+
+Source: [`packages/extensions/pixies/src/index.ts:58`](../packages/extensions/pixies/src/index.ts)
+
 <a id="deepseek-aidsh-plan-mode"></a>
 
 ## `@deepseek-ai/dsh-plan-mode`
@@ -3844,6 +3864,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@deepseek-ai/dsh-llm` ([`packages/llm/llm/src/index.ts`](../packages/llm/llm/src/index.ts))
 - `@deepseek-ai/dsh-lsp` ([`packages/lsp/lsp/src/index.ts`](../packages/lsp/lsp/src/index.ts))
 - `@deepseek-ai/dsh-mcp-resources` — requires `tools` ([`packages/mcp/mcp-resources/src/index.ts`](../packages/mcp/mcp-resources/src/index.ts))
+- `@deepseek-ai/dsh-pixies-panel` — requires `tools` · `userQuestions` ([`packages/extensions/pixies-panel/src/index.ts`](../packages/extensions/pixies-panel/src/index.ts))
 - `@deepseek-ai/dsh-sandbox-ssh` — requires `ssh` ([`packages/ssh/sandbox-ssh/src/index.ts`](../packages/ssh/sandbox-ssh/src/index.ts))
 - `@deepseek-ai/dsh-schedule` — requires `agents` · `sessions` · `tools` · `sessionPersistence` ([`packages/schedule/schedule/src/index.ts`](../packages/schedule/schedule/src/index.ts))
 - `@deepseek-ai/dsh-session` ([`packages/core/session/src/index.ts`](../packages/core/session/src/index.ts))

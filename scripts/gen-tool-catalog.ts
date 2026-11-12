@@ -47,6 +47,7 @@ import * as ToolPwshPersistent from '@deepseek-ai/dsh-tool-pwsh-persistent'
 import CordisHostRunner from '@deepseek-ai/dsh-cordis-host-runner'
 import * as ToolCordis from '@deepseek-ai/dsh-tool-cordis'
 import * as ToolPresent from '@deepseek-ai/dsh-tool-present'
+import * as PixiesPanel from '@deepseek-ai/dsh-pixies-panel'
 import * as ToolFs from '@deepseek-ai/dsh-tool-fs'
 import * as ToolFsSearch from '@deepseek-ai/dsh-tool-fs-search'
 import * as ToolStrReplaceEditor from '@deepseek-ai/dsh-tool-str-replace-editor'
@@ -653,6 +654,21 @@ const TOOL_PACKAGES: ToolPackage[] = [
     },
     note:
       'web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps.',
+  },
+  {
+    pkg: '@deepseek-ai/dsh-pixies-panel',
+    dir: 'pixies-panel',
+    source: 'packages/extensions/pixies-panel/src/index.ts',
+    requires: ['ctx.tools', 'ctx.userQuestions'],
+    writes: ['tool/call', 'tool/result'],
+    async mount(ctx) {
+      // Only the seam service is needed: a non-interactive panel never asks,
+      // and schema harvesting never shows a window or waits for an answer.
+      await ctx.plugin(UserQuestionService)
+      await ctx.plugin(PixiesPanel)
+    },
+    note:
+      'show_result_panel presents images, text, choices, and links in the Pixies standalone result panel. Every call travels over the user-questions seam: choice items wait for a human answer, while a display-only question lets the panel answerer acknowledge a non-interactive panel immediately.',
   },
 ]
 

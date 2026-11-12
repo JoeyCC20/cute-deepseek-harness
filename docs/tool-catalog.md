@@ -44,6 +44,7 @@ This table connects model-visible tool names to the plugin package and service s
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`, `owning Agent session` | `tool/call`, `todo/write`, `tool/result` | - | todo_write is session-owned state; UIs render the latest todo/write event as a checklist. `allowParallelInProgress` is required with no default, so the catalog states its choice: `true`, whose description invites several `in_progress` items. A deployment choosing `false` receives the same tool with a description asking for exactly one active task. |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`, `ctx.workflowEngine`, `ctx.systemPrompt`, `a calling Agent (exec.agent parents the script children)` | `tool/call`, `tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`, `web_search` | `ctx.tools`, `ctx.web`, `ctx.systemPrompt` | `tool/call`, `tool/result` | - | web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps. |
+| `@deepseek-ai/dsh-pixies-panel` | `show_result_panel` | `ctx.tools`, `ctx.userQuestions` | `tool/call`, `tool/result` | - | show_result_panel presents images, text, choices, and links in the Pixies standalone result panel. Every call travels over the user-questions seam: choice items wait for a human answer, while a display-only question lets the panel answerer acknowledge a non-interactive panel immediately. |
 
 <a id="deepseek-aidsh-plugin-manager"></a>
 
@@ -2488,3 +2489,110 @@ Search the web for current information. Provide 1–4 queries in the required qu
 Source: [`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/index.ts)
 
 web_search and web_fetch keep provider selection behind ctx.web so model-visible schemas stay stable across backend swaps.
+
+<a id="deepseek-aidsh-pixies-panel"></a>
+
+## `@deepseek-ai/dsh-pixies-panel`
+
+### `show_result_panel`
+
+Show a compact, self-contained result panel to the user. Call it when you have a concrete result worth seeing outside the transcript: an image, a computed or queried result, a set of links, or a short choice the user must make (confirm/authorize/select). Decide for yourself whether the result benefits from a panel; do NOT call it for short plain-text answers, intermediate reasoning steps, or progress updates. Each item has a `kind` of "image" (local path or http(s) URL in `source`), "text" (`content`, optional `format` markdown), "choice" (`question`, non-empty `options` with labels, optional `multi_select`), or "link" (`label`, http(s) `url`). A choice item pauses the call until the user answers; the selected labels are returned. Whether you can call this tool, and whether you can interpret images, depends on your own capabilities.
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Optional short heading for the panel."
+    },
+    "items": {
+      "type": "array",
+      "description": "One to twelve result items, rendered in order.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "image, text, choice, or link.",
+            "enum": [
+              "image",
+              "text",
+              "choice",
+              "link"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "description": "image: a local file path or an http(s) URL."
+          },
+          "alt": {
+            "type": "string",
+            "description": "image: alternative text."
+          },
+          "content": {
+            "type": "string",
+            "description": "text: the content to show."
+          },
+          "format": {
+            "type": "string",
+            "description": "text: plain (default) or markdown.",
+            "enum": [
+              "plain",
+              "markdown"
+            ]
+          },
+          "question": {
+            "type": "string",
+            "description": "choice: the question to ask."
+          },
+          "options": {
+            "type": "array",
+            "description": "choice: selectable answers.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "description": "Short answer label."
+                },
+                "description": {
+                  "type": "string",
+                  "description": "One sentence explaining the tradeoff."
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          },
+          "multi_select": {
+            "type": "boolean",
+            "description": "choice: allow more than one selected label."
+          },
+          "label": {
+            "type": "string",
+            "description": "link: the clickable text."
+          },
+          "url": {
+            "type": "string",
+            "description": "link: an absolute http(s) URL opened in the default browser."
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    }
+  },
+  "required": [
+    "items"
+  ]
+}
+```
+
+Source: [`packages/extensions/pixies-panel/src/index.ts`](../packages/extensions/pixies-panel/src/index.ts)
+
+show_result_panel presents images, text, choices, and links in the Pixies standalone result panel. Every call travels over the user-questions seam: choice items wait for a human answer, while a display-only question lets the panel answerer acknowledge a non-interactive panel immediately.

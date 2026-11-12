@@ -25,6 +25,14 @@ export const APP_ROOT = resolve(SCRIPTS_ROOT, '..')
 export const REPOSITORY_ROOT = resolve(APP_ROOT, '..', '..')
 const PIXIES_PACKAGE = '@deepseek-ai/dsh-pixies'
 const PIXIES_PACKAGE_DIR = join(REPOSITORY_ROOT, 'packages', 'extensions', 'pixies')
+const PIXIES_PANEL_PACKAGE = '@deepseek-ai/dsh-pixies-panel'
+const PIXIES_PANEL_PACKAGE_DIR = join(REPOSITORY_ROOT, 'packages', 'extensions', 'pixies-panel')
+
+/** Bundles the Pixies desktop app composes into every staged project. */
+const PIXIES_BUNDLES = [
+  { name: PIXIES_PACKAGE, dir: PIXIES_PACKAGE_DIR, artifacts: ['lib/index.js', 'lib/client.js'] },
+  { name: PIXIES_PANEL_PACKAGE, dir: PIXIES_PANEL_PACKAGE_DIR, artifacts: ['lib/index.js'] },
+] as const
 
 interface PackageManifest {
   readonly version?: string
@@ -43,29 +51,33 @@ export function pixiesAppVersion(): string {
   return packageVersion(join(APP_ROOT, 'package.json'), 'pixies package')
 }
 
-/** Link the pixies bundle into the staged project and register it as a profile bundle. */
+/** Link every pixies bundle into the staged project and register them as profile bundles. */
 export function stagePixiesBundle(projectDir: string): void {
-  for (const artifact of ['lib/index.js', 'lib/client.js']) {
-    const path = join(PIXIES_PACKAGE_DIR, artifact)
-    if (!existsSync(path)) throw new Error(`pixies staging: missing built artifact ${path}`)
-  }
-  const link = join(projectDir, 'node_modules', '@deepseek-ai', 'dsh-pixies')
-  try {
-    unlinkSync(link)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
-  symlinkSync(PIXIES_PACKAGE_DIR, link, process.platform === 'win32' ? 'junction' : 'dir')
   const manifestPath = join(projectDir, 'package.json')
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
     dsh?: { profile?: { bundles?: readonly string[] } }
   }
   const bundles = manifest.dsh?.profile?.bundles
   if (bundles === undefined) throw new Error('pixies staging: staged project has no dsh.profile.bundles')
-  if (bundles.includes(PIXIES_PACKAGE)) return
+  const registered = [...bundles]
+  for (const bundle of PIXIES_BUNDLES) {
+    for (const artifact of bundle.artifacts) {
+      const path = join(bundle.dir, artifact)
+      if (!existsSync(path)) throw new Error(`pixies staging: missing built artifact ${path}`)
+    }
+    const link = join(projectDir, 'node_modules', ...bundle.name.split('/'))
+    try {
+      unlinkSync(link)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    symlinkSync(bundle.dir, link, process.platform === 'win32' ? 'junction' : 'dir')
+    if (!registered.includes(bundle.name)) registered.push(bundle.name)
+  }
+  if (registered.length === bundles.length) return
   manifest.dsh = {
     ...manifest.dsh,
-    profile: { ...manifest.dsh?.profile, bundles: [...bundles, PIXIES_PACKAGE] },
+    profile: { ...manifest.dsh?.profile, bundles: registered },
   }
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 }

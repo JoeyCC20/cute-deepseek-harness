@@ -59,6 +59,10 @@ export interface PixiesPanelMessages {
   readonly placeholder?: string
   /** Send button label. */
   readonly send?: string
+  /** Composer action label while a turn is running (replaces Send). */
+  readonly stop?: string
+  /** System message shown after a turn is interrupted or cancelled. */
+  readonly taskStopped?: string
   /** Keyboard hint under the composer. */
   readonly sendHint?: string
   /** Textarea accessible label. */
@@ -185,6 +189,26 @@ export interface PixiesPanelMessages {
   readonly settingsHint?: string
   /** Explains that the provider dropdown contains every installed route. */
   readonly providerHint?: string
+  /** Fallback title of the standalone result panel. */
+  readonly panelTitle?: string
+  /** Accessible label of the result-panel close button. */
+  readonly panelClose?: string
+  /** Label of the button that submits a choice answer. */
+  readonly panelSubmit?: string
+  /** Fallback alt text for a result image. */
+  readonly panelImageAlt?: string
+  /** Section headline for result-panel preferences. */
+  readonly panelSection?: string
+  /** Label of the master result-panel switch. */
+  readonly panelEnable?: string
+  /** Label of the auto-hide delay selector. */
+  readonly panelAutoHide?: string
+  /** Hint under the result-panel preferences. */
+  readonly panelHint?: string
+  /** Unit suffix for a numeric auto-hide delay. */
+  readonly panelSeconds?: string
+  /** Auto-hide option: never. */
+  readonly panelHideNever?: string
 }
 
 /** Every field resolved to a concrete string. */
@@ -217,6 +241,8 @@ export const defaultPixiesMessages: PixiesResolvedMessages = {
   empty: '在下面直接输入，或点麦克风说话。拖动顶部可以把我放到屏幕任何地方。',
   placeholder: '给 Pixies 发消息…',
   send: '发送',
+  stop: '停止',
+  taskStopped: '任务已停止',
   sendHint: 'Enter 发送 · Shift+Enter 换行 · Esc 收起 · ⌘⇧J 语音指令 · ⌘⇧K 展开/收起',
   inputLabel: '消息输入框',
   history: '历史会话',
@@ -280,6 +306,16 @@ export const defaultPixiesMessages: PixiesResolvedMessages = {
   providerEnabling: '启用中',
   settingsHint: '选择模型并填写它自己的 API Key，改动会作用于当前会话',
   providerHint: '下拉包含所有已安装的内置方案；标注「未启用」的方案会在应用时自动启用',
+  panelTitle: '任务结果',
+  panelClose: '关闭面板',
+  panelSubmit: '提交',
+  panelImageAlt: '结果图片',
+  panelSection: '结果面板',
+  panelEnable: '显示结果面板',
+  panelAutoHide: '自动隐藏',
+  panelHint: '面板默认在屏幕右上角显示任务结果；含选择项的面板会等待你的回答，不会自动隐藏',
+  panelSeconds: ' 秒后',
+  panelHideNever: '不隐藏',
 }
 
 /**

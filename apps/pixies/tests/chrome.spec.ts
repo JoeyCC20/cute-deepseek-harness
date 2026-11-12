@@ -453,21 +453,28 @@ describe('extra global shortcuts (voice command / expand)', () => {
     const { deps, shortcutState, windowState, trayState } = bench()
     const chrome = createPixiesChrome(deps, options)
     const voiceCommand = vi.fn()
+    const queueVoiceCommand = vi.fn()
+    const stopTask = vi.fn()
     const expand = vi.fn()
     expect(chrome.registerShortcut('CommandOrControl+Shift+J', voiceCommand)).toBe(true)
+    expect(chrome.registerShortcut('CommandOrControl+Shift+Q', queueVoiceCommand)).toBe(true)
+    expect(chrome.registerShortcut('CommandOrControl+Shift+S', stopTask)).toBe(true)
     expect(chrome.registerShortcut('CommandOrControl+Shift+K', expand)).toBe(true)
 
     expect(shortcutState.registrations.map(entry => entry.accelerator)).toEqual([
-      'CommandOrControl+Shift+P', 'CommandOrControl+Shift+J', 'CommandOrControl+Shift+K',
+      'CommandOrControl+Shift+P', 'CommandOrControl+Shift+J', 'CommandOrControl+Shift+Q',
+      'CommandOrControl+Shift+S', 'CommandOrControl+Shift+K',
     ])
-    shortcutState.registrations[1]?.callback()
-    shortcutState.registrations[2]?.callback()
+    for (const entry of shortcutState.registrations.slice(1)) entry.callback()
     expect(voiceCommand).toHaveBeenCalledTimes(1)
+    expect(queueVoiceCommand).toHaveBeenCalledTimes(1)
+    expect(stopTask).toHaveBeenCalledTimes(1)
     expect(expand).toHaveBeenCalledTimes(1)
 
     chrome.dispose()
     expect(shortcutState.unregistered).toEqual([
-      'CommandOrControl+Shift+P', 'CommandOrControl+Shift+J', 'CommandOrControl+Shift+K',
+      'CommandOrControl+Shift+P', 'CommandOrControl+Shift+J', 'CommandOrControl+Shift+Q',
+      'CommandOrControl+Shift+S', 'CommandOrControl+Shift+K',
     ])
     expect(trayState.destroyed).toBe(true)
     expect(windowState.visible).toBe(false)

@@ -20,8 +20,10 @@ pnpm run start:pixies      # reuse the prepared project and launch immediately
 
 开发状态位于 `apps/pixies/.pixies-build/development`：`home`（Harness home）、`project`（一次性
 profile）、`electron-user-data`，以及自动补齐的 `office-skills`。启动后窗口即显示；点击托盘切换显示，
-`Cmd/Ctrl+Shift+P` 唤起，`Cmd/Ctrl+Shift+J` 开始或结束语音指令，`Cmd/Ctrl+Shift+K` 切换对话面板，
-托盘右键菜单提供显示/隐藏、重置位置与退出。需要调试渲染进程时设置 `DSH_PIXIES_OPEN_DEVTOOLS=1`。
+`Cmd/Ctrl+Shift+P` 唤起，`Cmd/Ctrl+Shift+J` 开始或结束语音指令（抢占当前任务），
+`Cmd/Ctrl+Shift+Q` 开始或结束语音指令（排到当前任务之后），`Cmd/Ctrl+Shift+S` 停止当前任务，
+`Cmd/Ctrl+Shift+K` 切换对话面板，托盘右键菜单提供显示/隐藏、重置位置与退出。
+需要调试渲染进程时设置 `DSH_PIXIES_OPEN_DEVTOOLS=1`。
 
 凭证来自仓库根目录 `.env`（开发模式通过 `DSH_PIXIES_ENV_FILE` 明确指定）、`~/.config/dsh/env`
 或 shell rc 文件；预启动注入器不会覆盖环境中已有的值。要拿到模型回复需要 `DEEPSEEK_API_KEY`。
@@ -47,10 +49,16 @@ profile）、`electron-user-data`，以及自动补齐的 `office-skills`。启�
   归给 Pixies 自己的 bundle，而不是启动它的 IDE 或终端。启动器的可执行文件是指向 Electron
   二进制的符号链接（用 shell 脚本会导致菜单栏状态项不可见），开发环境与日志路径通过 argv
   交给 `src/pixies-keychain.cjs`。
-- `Cmd/Ctrl+Shift+J` 无需点击即可发起语音指令：迷你头像切换为红色脉冲光环，表示 Swift 识别器
-  正在接受指令；再按一次结束本轮并送出已识别的草稿。从提交指令到首条回复之间，头像改为蓝色
-  旋转思考光环，长时间的模型调用不会看起来像卡住。`Cmd/Ctrl+Shift+K` 是展开/收起切换：按一次
-  显示并展开对话面板，再按一次收起为迷你头像。两个快捷键都由托盘 chrome 持有，退出时统一注销。
+- `Cmd/Ctrl+Shift+J` 无需点击即可发起语音指令：按下时先取消正在执行的回合，迷你头像切换为红色
+  脉冲光环，表示 Swift 识别器正在接受指令；再按一次结束本轮并送出已识别的草稿（作为新的排队输入）。
+  `Cmd/Ctrl+Shift+Q` 的语音轮次不打断当前执行：转写文本进入会话已有的 inbox 队列，等当前回合结束后
+  再执行。`Cmd/Ctrl+Shift+S` 只取消正在执行的回合（并丢弃进行中的语音轮次），已排队的工作在取消后
+  仍按 FIFO 继续。从提交指令到首条回复之间，头像改为蓝色旋转思考光环，长时间的模型调用不会看起来
+  像卡住。`Cmd/Ctrl+Shift+K` 是展开/收起切换：按一次显示并展开对话面板，再按一次收起为迷你头像。
+  所有快捷键都由托盘 chrome 持有，退出时统一注销。
+- 任务执行过程中，输入框旁的发送按钮会变成红色停止按钮。从按钮、`Cmd/Ctrl+Shift+S`
+  或抢占式的 `Cmd/Ctrl+Shift+J` 停止任务时，会立刻清除"思考中…"状态，并在对话记录里留下
+  一条可见的"任务已停止"。
 - 助手回复优先用语音返回，走同一个 Swift helper 的 `speak` 子命令（`AVSpeechSynthesizer`）：按回复
   语种选择嗓音，面板头部的喇叭按钮可静音。播报前会把内容压成纯文本（去掉代码、链接与 URL）并
   限制长度；合成失败会在面板里给出原因，不会静默失败。

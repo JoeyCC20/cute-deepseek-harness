@@ -48,6 +48,7 @@
 | `@deepseek-ai/dsh-tool-todo` | `todo_write` | `ctx.tools`、`owning Agent session` | `tool/call`、`todo/write`、`tool/result` | - | todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为检查清单。`allowParallelInProgress` 是没有默认值的必填项，因此本目录明确选择 `true`，对应描述允许同时存在多个 `in_progress` 项。选择 `false` 的部署会获得同一工具，但描述会要求只能有 1 个活动任务。 |
 | `@deepseek-ai/dsh-tool-workflow` | `workflow` | `ctx.tools`、`ctx.workflowEngine`、`ctx.systemPrompt`、`a calling Agent (exec.agent parents the script children)` | `tool/call`、`tool/result` | - | - |
 | `@deepseek-ai/dsh-tool-web` | `web_fetch`、`web_search` | `ctx.tools`、`ctx.web`、`ctx.systemPrompt` | `tool/call`、`tool/result` | - | web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。 |
+| `@deepseek-ai/dsh-pixies-panel` | `show_result_panel` | `ctx.tools`、`ctx.userQuestions` | `tool/call`、`tool/result` | - | show_result_panel 在 Pixies 独立结果面板中呈现图片、文字、选择与链接。每次调用都经由 user-questions seam：choice 条目等待人类回答，而非交互面板由展示专用问题让面板 answerer 立即确认。 |
 
 <a id="deepseek-aidsh-plugin-manager"></a>
 
@@ -2496,3 +2497,110 @@ todo_write 是会话所有的状态；UI 将最新的 todo/write 事件渲染为
 来源：[`packages/web/tool-web/src/index.ts`](../packages/web/tool-web/src/index.ts)
 
 web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可见 schema 在更换后端时保持稳定。
+
+<a id="deepseek-aidsh-pixies-panel"></a>
+
+## `@deepseek-ai/dsh-pixies-panel`
+
+### `show_result_panel`
+
+向用户展示一个紧凑、自包含的结果面板。当有值得在对话记录之外查看的具体结果时调用：图片、计算或查询结果、一组链接，或用户必须做出的简短选择（确认／授权／选择）。是否值得开面板由你自己判断；不要为简短纯文本回答、中间推理步骤或进度更新调用它。每个条目都有 `kind` 字段："image"（`source` 为本地路径或 http(s) URL）、"text"（`content`，可选 `format` markdown）、"choice"（`question`、带标签的非空 `options`、可选 `multi_select`）、"link"（`label`、http(s) `url`）。choice 条目会暂停调用直到用户回答，并返回所选标签。你能否调用该工具、能否理解图片，取决于你自身的能力。
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "title": {
+      "type": "string",
+      "description": "Optional short heading for the panel."
+    },
+    "items": {
+      "type": "array",
+      "description": "One to twelve result items, rendered in order.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "image, text, choice, or link.",
+            "enum": [
+              "image",
+              "text",
+              "choice",
+              "link"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "description": "image: a local file path or an http(s) URL."
+          },
+          "alt": {
+            "type": "string",
+            "description": "image: alternative text."
+          },
+          "content": {
+            "type": "string",
+            "description": "text: the content to show."
+          },
+          "format": {
+            "type": "string",
+            "description": "text: plain (default) or markdown.",
+            "enum": [
+              "plain",
+              "markdown"
+            ]
+          },
+          "question": {
+            "type": "string",
+            "description": "choice: the question to ask."
+          },
+          "options": {
+            "type": "array",
+            "description": "choice: selectable answers.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "description": "Short answer label."
+                },
+                "description": {
+                  "type": "string",
+                  "description": "One sentence explaining the tradeoff."
+                }
+              },
+              "required": [
+                "label"
+              ]
+            }
+          },
+          "multi_select": {
+            "type": "boolean",
+            "description": "choice: allow more than one selected label."
+          },
+          "label": {
+            "type": "string",
+            "description": "link: the clickable text."
+          },
+          "url": {
+            "type": "string",
+            "description": "link: an absolute http(s) URL opened in the default browser."
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    }
+  },
+  "required": [
+    "items"
+  ]
+}
+```
+
+来源：[`packages/extensions/pixies-panel/src/index.ts`](../packages/extensions/pixies-panel/src/index.ts)
+
+show_result_panel 在 Pixies 独立结果面板中呈现图片、文字、选择与链接。每次调用都经由 user-questions seam：choice 条目等待人类回答，而非交互面板由展示专用问题让面板 answerer 立即确认。

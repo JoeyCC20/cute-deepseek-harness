@@ -385,6 +385,7 @@
     { "path": "./packages/guard/repeat-tool-reminder" },
     { "path": "./packages/extensions/cordis-host-runner" },
     { "path": "./packages/extensions/pixies/tsconfig.host.json" },
+    { "path": "./packages/extensions/pixies-panel" },
     { "path": "./packages/extensions/tool-cordis" },
     { "path": "./packages/hooks/hook-protocol" },
     { "path": "./packages/hooks/hooks-claude-code" },

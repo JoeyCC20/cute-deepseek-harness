@@ -12,6 +12,9 @@
     "src/client/locale.ts",
     "src/client/models.ts",
     "src/client/settings.tsx",
+    "src/client/panel.tsx",
+    "src/client/panel-answerer.ts",
+    "src/client/panel-bridge.ts",
     "src/client/character.tsx",
     "src/client/conversation.tsx",
     "src/client/shell.tsx",
@@ -28,6 +31,9 @@
     },
     {
       "path": "../../api/session-controller/tsconfig.client.json"
+    },
+    {
+      "path": "../pixies-panel"
     },
     {
       "path": "../../typert/protocol"

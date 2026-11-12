@@ -33,13 +33,21 @@ import {
   protocol,
   screen,
   session,
+  shell,
   systemPreferences,
   Tray,
 } from 'electron'
-import { createPixiesChrome, nextConversationMode, unionWorkArea, type PixiesChromeDeps, type PixiesWindowLike } from './chrome.ts'
+import { createPixiesChrome, nextConversationMode, topRightPosition, unionWorkArea, type PixiesChromeDeps, type PixiesWindowLike } from './chrome.ts'
 import { DesktopHostProcess } from './host-process.ts'
 import { forwardToPixiesHost, pixiesBootPayload, pixiesWebSocketHeaders } from './host-proxy.ts'
 import { spiderMaskIcon } from './icon.ts'
+import {
+  DEFAULT_PANEL_SETTINGS,
+  PANEL_SETTINGS_FILE,
+  panelHideDelay,
+  parsePanelSettings,
+  type PixiesPanelSettings,
+} from './panel-settings.ts'
 import { composePixiesDeployStamp, readPixiesBuildStamp } from './project-stamp.ts'
 import { claimPixiesSingleInstance } from './single-instance.ts'
 import { parseProbeOutput, PixiesSpeechController, type PixiesSpeechEvent } from './speech.ts'
@@ -52,11 +60,21 @@ const SETTINGS_SIZE = { width: 900, height: 680 }
 const MINI_SIZE = { width: 112, height: 112 }
 const SCREEN_MARGIN = 12
 const MINI_MARGIN = 8
+/** The standalone result panel sits below the mini avatar, still top-right. */
+const PANEL_SIZE = { width: 380, height: 460 }
+const PANEL_MARGIN = 12
+const PANEL_TOP_OFFSET = MINI_SIZE.height + MINI_MARGIN + 4
 const SHORTCUT = 'CommandOrControl+Shift+P'
-/** Start/stop one voice-command round without clicking the avatar. */
+/** Start/stop a voice-command round that replaces the running turn. */
 const VOICE_COMMAND_SHORTCUT = 'CommandOrControl+Shift+J'
+/** Start/stop a voice-command round that waits behind the running turn. */
+const QUEUE_VOICE_COMMAND_SHORTCUT = 'CommandOrControl+Shift+Q'
+/** Stop the running turn without starting a voice round. */
+const STOP_TASK_SHORTCUT = 'CommandOrControl+Shift+S'
 /** Toggle the conversation panel from anywhere. */
 const CONVERSATION_SHORTCUT = 'CommandOrControl+Shift+K'
+/** How a shortcut-started voice round treats a turn already running. */
+type VoiceCommandMode = 'replace' | 'queue'
 const TOOLTIP = 'Pixies · 蜘蛛侠'
 const PLACEMENT_FILE = 'pixies-window.json'
 
@@ -102,6 +120,25 @@ function savePixiesWindowPlacement(placement: PixiesWindowPlacement): void {
 function clearPixiesWindowPlacement(): void {
   try {
     rmSync(join(app.getPath('userData'), PLACEMENT_FILE), { force: true })
+  } catch {
+    // A read-only userData directory must not take the app down.
+  }
+}
+
+/** Load the result-panel preferences; a missing or corrupt file uses defaults. */
+function loadPanelSettings(): PixiesPanelSettings {
+  try {
+    const raw = readFileSync(join(app.getPath('userData'), PANEL_SETTINGS_FILE), 'utf8')
+    return parsePanelSettings(JSON.parse(raw) as unknown)
+  } catch {
+    return DEFAULT_PANEL_SETTINGS
+  }
+}
+
+/** Persist one validated settings snapshot. */
+function savePanelSettings(settings: PixiesPanelSettings): void {
+  try {
+    writeFileSync(join(app.getPath('userData'), PANEL_SETTINGS_FILE), `${JSON.stringify(settings, undefined, 2)}\n`)
   } catch {
     // A read-only userData directory must not take the app down.
   }
@@ -558,15 +595,21 @@ async function main(): Promise<void> {
   let quitting = false
   let pixiesWindow: Electron.BrowserWindow | undefined
   let settingsWindow: Electron.BrowserWindow | undefined
+  let panelWindow: Electron.BrowserWindow | undefined
+  let panelHideTimer: ReturnType<typeof setTimeout> | undefined
+  let panelSettings = loadPanelSettings()
   // The Remote Event WebSocket bypasses `protocol.handle`, so it needs its own
-  // Host authentication (Desktop does exactly this for its main window). Both
-  // the character window and the settings window use the same boot-time cookie.
+  // Host authentication (Desktop does exactly this for its main window). All
+  // three Pixies windows share the same boot-time cookie.
   session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['ws://127.0.0.1/*'] }, (details, callback) => {
-    const roleId = pixiesWindow?.webContents.id
-    const settingsId = settingsWindow?.webContents.id
-    const id = details.webContentsId !== undefined && details.webContentsId === settingsId
-      ? settingsId
-      : roleId
+    const windowIds = [
+      pixiesWindow?.webContents.id,
+      settingsWindow?.webContents.id,
+      panelWindow?.webContents.id,
+    ]
+    const id = details.webContentsId !== undefined && windowIds.includes(details.webContentsId)
+      ? details.webContentsId
+      : undefined
     callback(pixiesWebSocketHeaders(details, hostReady.url, hostCookie, id))
   })
   const preload = fileURLToPath(new URL('./preload-app.cjs', import.meta.url))
@@ -606,6 +649,98 @@ async function main(): Promise<void> {
     window.show()
   }
   ipcMain.handle('pixies:settings:open', () => { openSettingsWindow() })
+
+  /** Stop the pending auto-hide without destroying the panel window. */
+  const clearPanelHideTimer = (): void => {
+    if (panelHideTimer !== undefined) clearTimeout(panelHideTimer)
+    panelHideTimer = undefined
+  }
+
+  /** Hiding keeps the renderer and its answerer alive for the next result. */
+  const hidePanel = (): void => {
+    clearPanelHideTimer()
+    if (panelWindow !== undefined && !panelWindow.isDestroyed()) panelWindow.hide()
+  }
+
+  /**
+   * Create the panel once at startup. It stays hidden until a result arrives,
+   * but its renderer must load early so the forwarded question waterfall
+   * already has an answerer. `skipTaskbar` keeps it out of Dock/Cmd+Tab, and
+   * `showInactive` never steals focus from the app the user is working in.
+   */
+  const createPanelWindow = (): void => {
+    const window = new BrowserWindow({
+      width: PANEL_SIZE.width,
+      height: PANEL_SIZE.height,
+      show: false,
+      frame: false,
+      resizable: false,
+      skipTaskbar: true,
+      backgroundColor: '#00000000',
+      vibrancy: 'sidebar',
+      visualEffectState: 'active',
+      webPreferences: {
+        preload,
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+        webSecurity: true,
+      },
+    })
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    window.webContents.on('will-navigate', (event, url) => {
+      if (new URL(url).protocol !== `${SCHEME}:`) event.preventDefault()
+    })
+    window.on('closed', () => {
+      clearPanelHideTimer()
+      panelWindow = undefined
+    })
+    window.on('close', (event) => {
+      if (!quitting) {
+        event.preventDefault()
+        hidePanel()
+      }
+    })
+    panelWindow = window
+    void window.loadURL(`${SCHEME}://app/index.html?pixiesPanel=1`)
+  }
+
+  /** Show (or refresh) the panel for one result and restart its auto-hide. */
+  const showPanel = (interactive: boolean): void => {
+    if (!panelSettings.enabled) return
+    if (panelWindow === undefined || panelWindow.isDestroyed()) return
+    clearPanelHideTimer()
+    const base = topRightPosition(PANEL_SIZE, screen.getPrimaryDisplay().workArea, PANEL_MARGIN)
+    panelWindow.setPosition(base.x, base.y + PANEL_TOP_OFFSET)
+    panelWindow.showInactive()
+    const delay = panelHideDelay(panelSettings, interactive)
+    if (delay !== null) panelHideTimer = setTimeout(() => { hidePanel() }, delay)
+  }
+
+  ipcMain.handle('pixies:panel:show', (_event, interactive: unknown) => {
+    showPanel(interactive === true)
+  })
+  ipcMain.handle('pixies:panel:hide', () => { hidePanel() })
+  ipcMain.handle('pixies:panel:settings:get', () => panelSettings)
+  ipcMain.handle('pixies:panel:settings:set', (_event, value: unknown) => {
+    panelSettings = parsePanelSettings(value)
+    savePanelSettings(panelSettings)
+    settingsWindow?.webContents.send('pixies:panel:settings', panelSettings)
+    if (!panelSettings.enabled) hidePanel()
+    return panelSettings
+  })
+  ipcMain.handle('pixies:panel:open-external', async (_event, url: unknown) => {
+    if (typeof url !== 'string') return false
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
+      await shell.openExternal(parsed.href)
+      return true
+    } catch {
+      return false
+    }
+  })
+  createPanelWindow()
 
   // Only a voice-command round started while the icon was hidden shows a
   // temporary icon. Launch, tray clicks, shortcuts, drags and expands are all
@@ -797,12 +932,14 @@ async function main(): Promise<void> {
     return true
   })
   /**
-   * Cmd/Ctrl+Shift+J: one press opens a voice-command round. Feedback is sent
-   * before the microphone permission check (which can wait on a TCC dialog),
-   * so the avatar reacts on the keystroke itself. A second press ends the
-   * round and delivers whatever the recognizer already transcribed.
+   * Cmd/Ctrl+Shift+J / +Q: one press opens a voice-command round. Feedback is
+   * sent before the microphone permission check (which can wait on a TCC
+   * dialog), so the avatar reacts on the keystroke itself. A second press ends
+   * the round and delivers whatever the recognizer already transcribed. The
+   * renderer stops the running turn for a `replace` round; a `queue` round
+   * relies on the session's existing queued-prompt mechanism.
    */
-  const beginVoiceCommand = (): void => {
+  const beginVoiceCommand = (mode: VoiceCommandMode): void => {
     const wasHidden = !chrome.window.isVisible()
     if (wasHidden) {
       // A shortcut wake shows only the mini avatar as a round indicator; the
@@ -818,8 +955,14 @@ async function main(): Promise<void> {
       pixiesWindow?.webContents.send('pixies:voice-command', { type: 'stop' })
       return
     }
-    pixiesWindow?.webContents.send('pixies:voice-command', { type: 'start' })
+    pixiesWindow?.webContents.send('pixies:voice-command', { type: 'start', mode })
     void startSpeech()
+  }
+  /** Cmd/Ctrl+Shift+S: stop the running turn and discard any live voice round. */
+  const stopTask = (): void => {
+    voice.cancel()
+    if (speech.active) speech.stop()
+    pixiesWindow?.webContents.send('pixies:voice-command', { type: 'cancel' })
   }
   /** Cmd/Ctrl+Shift+K: open the conversation panel, or collapse it back to the avatar. */
   const toggleConversation = (): void => {
@@ -829,7 +972,9 @@ async function main(): Promise<void> {
     if (next === 'expanded') chrome.show()
   }
   for (const [accelerator, callback] of [
-    [VOICE_COMMAND_SHORTCUT, beginVoiceCommand],
+    [VOICE_COMMAND_SHORTCUT, () => { beginVoiceCommand('replace') }],
+    [QUEUE_VOICE_COMMAND_SHORTCUT, () => { beginVoiceCommand('queue') }],
+    [STOP_TASK_SHORTCUT, stopTask],
     [CONVERSATION_SHORTCUT, toggleConversation],
   ] as const) {
     if (!chrome.registerShortcut(accelerator, callback)) {
@@ -864,6 +1009,8 @@ async function main(): Promise<void> {
     if (quitting) return
     quitting = true
     event.preventDefault()
+    clearPanelHideTimer()
+    if (panelWindow !== undefined && !panelWindow.isDestroyed()) panelWindow.destroy()
     chrome.dispose()
     speech.dispose()
     voice.dispose()

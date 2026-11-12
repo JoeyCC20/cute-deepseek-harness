@@ -1,0 +1,5 @@
+# Registers `show_result_panel` for profiles that opt into the Pixies result
+# panel. The bundle mounts its own package, so it needs no self-dependency.
+- insert:
+    - id: pixies-panel
+      name: '@deepseek-ai/dsh-pixies-panel'

@@ -19,7 +19,11 @@ import {
   credentialRefFromSettings, createPixiesModelSettings, deriveCredentialRef, modelCredentialRef,
 } from './models.ts'
 import { mountPixiesSettings } from './settings.tsx'
+import { createPixiesPanelController } from './panel-answerer.ts'
+import { resolvePixiesPanelBridge } from './panel-bridge.ts'
+import { mountPixiesResultPanel } from './panel.tsx'
 import {
+  cancelPixiesSession,
   createPixiesSessionSelection,
   defaultPixiesMessages,
   followPixiesSession,
@@ -46,6 +50,7 @@ export {
 } from './character.tsx'
 export type { PixiesPanelMessages } from './character.tsx'
 export {
+  cancelPixiesSession,
   createPixiesSessionSelection,
   defaultPixiesMessages,
   followPixiesSession,
@@ -64,6 +69,7 @@ export type {
   PixiesShellMode,
   PixiesShellSpeechEvent,
   PixiesShellVoiceCommandEvent,
+  PixiesShellVoiceCommandMode,
   PixiesShellVoiceEvent,
 } from './shell.tsx'
 export type { PixiesInteraction, PixiesMood, PixiesPresentation } from '../types.ts'
@@ -100,6 +106,32 @@ export const pixiesStore = createPixiesStore()
 /** The overlay mount point created once per window when the shell marker is present. */
 let shellOverlay: HTMLDivElement | undefined
 
+/** True only in the standalone result-panel BrowserWindow. */
+function isPixiesPanelFace(): boolean {
+  return typeof globalThis.location !== 'undefined'
+    && new URLSearchParams(globalThis.location.search).has('pixiesPanel')
+}
+
+/**
+ * Mount the lightweight result-panel face. Only this window claims panel-owned
+ * questions; the character and settings windows keep their delegating listener.
+ * @param ctx - client root context.
+ */
+function applyPixiesPanelFace(ctx: ClientContext): void {
+  const bridge = resolvePixiesPanelBridge()
+  const controller = createPixiesPanelController((payload) => {
+    bridge?.showResultPanel(payload.interactive)
+  })
+  const root = mountPixiesResultPanel({ controller, bridge })
+  ctx.effect(() => () => {
+    root.unmount()
+    controller.dispose()
+  }, 'pixies-client: result panel teardown')
+  ctx.remote.$on('user-questions/request', function (request, next) {
+    return controller.claim(request) ?? next()
+  })
+}
+
 /**
  * Client plugin body: observe the forwarded approval and question waterfalls
  * into the shared store, always delegating; follow the live session feed; and
@@ -107,6 +139,10 @@ let shellOverlay: HTMLDivElement | undefined
  * @param ctx - client root context.
  */
 export function apply(ctx: ClientContext): void {
+  if (isPixiesPanelFace()) {
+    applyPixiesPanelFace(ctx)
+    return
+  }
   const selection = createPixiesSessionSelection()
   // The Host list is the whole catalog, including cold sessions from other
   // workspaces. An extra refresh makes sure that baseline has arrived before
@@ -293,6 +329,7 @@ export function apply(ctx: ClientContext): void {
         resolvePixiesShellBridge(),
         text => promptPixiesSession(ctx.sessions, text, selection),
         sessionPanel,
+        () => cancelPixiesSession(ctx.sessions, selection),
       )
     ctx.effect(() => () => {
       unmount()

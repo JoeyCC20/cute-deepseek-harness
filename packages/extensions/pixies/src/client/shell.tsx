@@ -35,9 +35,14 @@ export type PixiesShellVoiceEvent =
   | { readonly type: 'cancelled' }
   | { readonly type: 'error'; readonly message: string }
 
-/** The global voice-command shortcut's start/stop signal. */
+/** How a shortcut-started voice round treats the turn already running. */
+export type PixiesShellVoiceCommandMode = 'replace' | 'queue'
+
+/** One voice-command or task-control signal from the Electron preload bridge. */
 export interface PixiesShellVoiceCommandEvent {
-  readonly type: 'start' | 'stop'
+  readonly type: 'start' | 'stop' | 'cancel'
+  /** Present on `start`: `replace` stops the running turn; `queue` leaves it. */
+  readonly mode?: PixiesShellVoiceCommandMode
 }
 
 /** The two shell window modes: the corner mini avatar and the full panel. */
@@ -93,11 +98,13 @@ export function isPixiesVoiceReplyEvent(value: unknown): value is PixiesShellVoi
   return payload.type === 'error' && typeof payload.message === 'string'
 }
 
-/** Narrow one wire payload from the voice-command shortcut channel. */
+/** Narrow one wire payload from the voice-command/task-control channel. */
 export function isPixiesVoiceCommandEvent(value: unknown): value is PixiesShellVoiceCommandEvent {
   if (typeof value !== 'object' || value === null) return false
-  const type = (value as Record<string, unknown>).type
-  return type === 'start' || type === 'stop'
+  const payload = value as Record<string, unknown>
+  if (payload.type !== 'start' && payload.type !== 'stop' && payload.type !== 'cancel') return false
+  if (payload.mode === undefined) return true
+  return payload.mode === 'replace' || payload.mode === 'queue'
 }
 
 /** Newest non-user entry in the visible history (a reply or a turn failure). */
@@ -196,6 +203,29 @@ export async function promptPixiesSession(
     await reference.ready
     const result = await reference.binding.session.prompt([{ type: 'text', text }], 'queue')
     if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+  })
+}
+
+/**
+ * Cancel the running turn in the followed session. No session is created: an
+ * absent target has nothing to stop, and an unattached Agent is already idle,
+ * so `session/not-found` is not reported as a failure.
+ * @param sessions - the client sessions face.
+ * @param selection - the shell's chosen session, when it has one.
+ * @throws when the cancel RPC fails for any other reason.
+ */
+export async function cancelPixiesSession(
+  sessions: ISessions,
+  selection?: PixiesSessionSelection,
+): Promise<void> {
+  const target = pickPixiesSessionId(sessions.list.getSnapshot(), selection?.get())
+  if (target === undefined) return
+  await sessions.using(target, { source: 'pixiesShell' }, async (reference) => {
+    await reference.ready
+    const result = await reference.binding.session.cancel()
+    if (!result.ok && result.error.code !== 'session/not-found') {
+      throw new Error(`${result.error.code}: ${result.error.message}`)
+    }
   })
 }
 
@@ -326,10 +356,11 @@ interface ShellPanelProps {
   readonly messages: PixiesPanelMessages
   readonly bridge: PixiesShellBridge | undefined
   readonly onSendText: ((text: string) => void | Promise<void>) | undefined
+  readonly onCancelTask: (() => void | Promise<void>) | undefined
   readonly sessionPanel: PixiesSessionPanel | undefined
 }
 
-function ShellPanel({ store, messages, bridge, onSendText, sessionPanel }: ShellPanelProps): ReactElement {
+function ShellPanel({ store, messages, bridge, onSendText, onCancelTask, sessionPanel }: ShellPanelProps): ReactElement {
   const [state, setState] = useState(store.getState)
   const [sessionList, setSessionList] = useState<SessionListState | undefined>(sessionPanel?.getSnapshot())
   const [hiddenSessionIds, setHiddenSessionIds] = useState<readonly SessionId[]>(sessionPanel?.hiddenIds() ?? [])
@@ -353,6 +384,9 @@ function ShellPanel({ store, messages, bridge, onSendText, sessionPanel }: Shell
   const partialRef = useRef('')
   const spokenIdRef = useRef(lastReply(state.messages)?.id)
   const submittedReplyIdRef = useRef<string | undefined>(undefined)
+  // A stop signal discards the live round, including a final transcript the
+  // recognizer may still emit after its stdin closes.
+  const discardSpeechRef = useRef(false)
   const setPartialText = useCallback((text: string): void => {
     partialRef.current = text
     setPartial(text)
@@ -370,6 +404,28 @@ function ShellPanel({ store, messages, bridge, onSendText, sessionPanel }: Shell
       setAwaitingReply(false)
     })
   }, [onSendText, store, copy])
+  const followedSessionId = selectedSessionId ?? sessionList?.current
+  const catalogRunning = followedSessionId !== undefined
+    && sessionList?.byId[followedSessionId]?.running === true
+  const taskRunning = awaitingReply || state.pendingSession !== undefined || catalogRunning
+  const cancelTask = useCallback((): void => {
+    // Only a live turn produces stop feedback: an idle voice round must not
+    // leave a "task stopped" line (or speak one) on every shortcut press.
+    if (taskRunning) {
+      setAwaitingReply(false)
+      const pending = store.getState().pendingSession
+      if (pending !== undefined) store.endThinking(pending)
+      store.appendMessage({ role: 'system', text: copy.taskStopped, mood: 'neutral' })
+      // Control feedback is not a reply: move the playback cursor past it so
+      // the voice-reply effect never reads this line aloud.
+      const newest = lastReply(store.getState().messages)
+      if (newest !== undefined) spokenIdRef.current = newest.id
+    }
+    void Promise.resolve(onCancelTask?.()).catch((error: unknown) => {
+      // An idle session is already handled upstream; other cancel failures stay visible.
+      setSpeechError(`${copy.promptFailed}: ${error instanceof Error ? error.message : String(error)}`)
+    })
+  }, [onCancelTask, copy, store, taskRunning])
   useEffect(() => store.subscribe(setState), [store])
   // A shortcut-shown icon exists only for the round in progress: listening,
   // thinking and reply playback all keep it visible. The main process decides
@@ -438,20 +494,32 @@ function ShellPanel({ store, messages, bridge, onSendText, sessionPanel }: Shell
     return bridge.onVoiceCommand((event: unknown) => {
       if (!isPixiesVoiceCommandEvent(event)) return
       if (event.type === 'start') {
+        discardSpeechRef.current = false
         setListening(true)
         setPartialText('')
         setSpeechError('')
         setVoiceError('')
         setAwaitingReply(false)
+        // A replace round stops the turn before its transcript is submitted;
+        // a queue round leaves it running and relies on the inbox order.
+        if (event.mode === 'replace') cancelTask()
+        return
+      }
+      if (event.type === 'cancel') {
+        discardSpeechRef.current = true
+        setListening(false)
+        setPartialText('')
+        setAwaitingReply(false)
+        cancelTask()
         return
       }
       // A second press ends the round: the recognized draft is still input.
       const recognized = partialRef.current
       setListening(false)
       setPartialText('')
-      if (recognized.trim() !== '') sendText(recognized)
+      if (recognized.trim() !== '' && !discardSpeechRef.current) sendText(recognized)
     })
-  }, [bridge, sendText, setPartialText])
+  }, [bridge, sendText, setPartialText, cancelTask])
 
   // The main process owns the real geometry. Reconcile on mount so a tray
   // shortcut or a restored expanded session cannot leave the renderer showing
@@ -487,7 +555,7 @@ function ShellPanel({ store, messages, bridge, onSendText, sessionPanel }: Shell
       setListening(false)
       setPartialText('')
       bridge.stopSpeech()
-      if (event.type === 'final' && event.text !== '') {
+      if (event.type === 'final' && event.text !== '' && !discardSpeechRef.current) {
         setSpeechError('')
         sendText(event.text)
       } else if (event.type === 'error') {
@@ -596,6 +664,8 @@ function ShellPanel({ store, messages, bridge, onSendText, sessionPanel }: Shell
     draft,
     onDraftChange: setDraft,
     onSend,
+    taskRunning,
+    onStop: cancelTask,
     onExpand,
     onCollapse,
     onMicToggle,
@@ -639,6 +709,8 @@ function ShellPanel({ store, messages, bridge, onSendText, sessionPanel }: Shell
  * @param onFinalTranscript - callback for each submitted prompt; a returned
  *   Promise's rejection (send failure) surfaces in the status bubble.
  * @param sessionPanel - the live catalog/selection rendered by the history drawer.
+ * @param onCancelTask - callback for the stop/replace shortcut signals; a
+ *   returned Promise's rejection surfaces in the status bubble.
  * @returns a disposer that unmounts the React root.
  */
 export function mountPixiesShell(
@@ -648,10 +720,11 @@ export function mountPixiesShell(
   bridge: PixiesShellBridge | undefined = resolvePixiesShellBridge(),
   onFinalTranscript?: (text: string) => void | Promise<void>,
   sessionPanel?: PixiesSessionPanel,
+  onCancelTask?: () => void | Promise<void>,
 ): () => void {
   const root: Root = createRoot(container)
   root.render(createElement(ShellPanel, {
-    store, messages, bridge, onSendText: onFinalTranscript, sessionPanel,
+    store, messages, bridge, onSendText: onFinalTranscript, sessionPanel, onCancelTask,
   }))
   return () => { root.unmount() }
 }

@@ -72,6 +72,7 @@ The Host plugin registers `ctx.pixies`, keeps the latest presentation per sessio
 | [`src/client/window-drag.ts`](src/client/window-drag.ts) | Thresholded pointer drag across displays. |
 | [`src/client/feed.ts`](src/client/feed.ts) | Session event folding into the visible store. |
 | [`src/client/locale.ts`](src/client/locale.ts) | Locale-owned product copy. |
+| — | No runtime invariant companion is published because the plugin only observes waterfalls and folds already-logged Session events; no two independent observations can diverge here. |
 
 </details>
 

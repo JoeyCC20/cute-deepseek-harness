@@ -58,10 +58,28 @@ contextBridge.exposeInMainWorld('dshPixies', {
     ipcRenderer.on('pixies:voice', channel)
     return () => { ipcRenderer.removeListener('pixies:voice', channel) }
   },
-  /** The global voice-command shortcut's start/stop signal. */
+  /** Global voice-command and task-control signals (start/stop/cancel). */
   onVoiceCommand: (listener: (event: unknown) => void): (() => void) => {
     const channel = (_event: Electron.IpcRendererEvent, payload: unknown): void => { listener(payload) }
     ipcRenderer.on('pixies:voice-command', channel)
     return () => { ipcRenderer.removeListener('pixies:voice-command', channel) }
+  },
+  /** Wake the standalone result panel for one result; choice panels never auto-hide. */
+  showResultPanel: (interactive: boolean): void => {
+    void ipcRenderer.invoke('pixies:panel:show', interactive)
+  },
+  /** Hide the panel from its close button; the next result wakes it again. */
+  hideResultPanel: (): void => { void ipcRenderer.invoke('pixies:panel:hide') },
+  /** Read the current result-panel preferences. */
+  getPanelSettings: (): Promise<unknown> => ipcRenderer.invoke('pixies:panel:settings:get'),
+  /** Persist result-panel preferences and return the validated snapshot. */
+  setPanelSettings: (value: unknown): Promise<unknown> => ipcRenderer.invoke('pixies:panel:settings:set', value),
+  /** Open an http(s) link in the default browser. */
+  openExternal: (url: string): Promise<unknown> => ipcRenderer.invoke('pixies:panel:open-external', url),
+  /** The settings window listens for preference changes made elsewhere. */
+  onPanelSettings: (listener: (settings: unknown) => void): (() => void) => {
+    const channel = (_event: Electron.IpcRendererEvent, settings: unknown): void => { listener(settings) }
+    ipcRenderer.on('pixies:panel:settings', channel)
+    return () => { ipcRenderer.removeListener('pixies:panel:settings', channel) }
   },
 })

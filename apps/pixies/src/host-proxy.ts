@@ -33,7 +33,7 @@ export type PixiesWebSocketHeaders =
  * @param details - Electron's pending request details.
  * @param hostUrl - the Host's ready URL.
  * @param hostCookie - the boot-time authentication cookie.
- * @param windowWebContentsId - the pixies window's webContents id, if created.
+ * @param windowWebContentsId - the authenticated Pixies window's webContents id, if any.
  * @returns the callback payload: rewritten headers, a cancellation, or no-op.
  */
 export function pixiesWebSocketHeaders(

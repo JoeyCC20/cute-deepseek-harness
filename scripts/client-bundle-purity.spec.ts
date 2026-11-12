@@ -151,6 +151,12 @@ describe('client bundle purity gate', () => {
     expect(() => resolveId('@deepseek-ai/dsh-spill-policy/notice/internal')).toThrow(/purity/)
   })
 
+  it('admits only the Pixies panel wire subpath, not its Host plugin', () => {
+    expect(resolveId('@deepseek-ai/dsh-pixies-panel/types')).toBeNull()
+    expect(() => resolveId('@deepseek-ai/dsh-pixies-panel')).toThrow(/purity/)
+    expect(() => resolveId('@deepseek-ai/dsh-pixies-panel/types/internal')).toThrow(/purity/)
+  })
+
   it('lets exact generated Remote contributions inline without admitting their package implementation', () => {
     expect(resolveId('@deepseek-ai/dsh-goal/remote')).toBeNull()
     expect(() => resolveId('@deepseek-ai/dsh-goal')).toThrow(/purity/)

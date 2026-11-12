@@ -25,6 +25,13 @@ import type { PixiesInteraction, PixiesPresentation } from './types.ts'
 /** Function-plugin identity, registered as a composition row (`- id: pixies`). */
 export const name = 'pixies'
 
+/**
+ * Wire marker mirrored from `dsh-pixies-panel/types#PIXIES_PANEL_HEADER`.
+ * The Host stays free of that plugin's runtime imports; the marker only keeps
+ * a result-panel request from raising a conversation bubble.
+ */
+const PANEL_QUESTION_HEADER = 'Pixies Result Panel'
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** Pixies presentation service: latest speech per session plus event publication. */
@@ -122,6 +129,9 @@ export function apply(ctx: Context, config: Config): void {
   }
   if (config.observeQuestions) {
     ctx.on('user-questions/request', (request, next) => {
+      // Panel-owned questions carry a result, not a conversation question.
+      // The character stays quiet while the standalone panel answers them.
+      if (request.questions.every(question => question.header === PANEL_QUESTION_HEADER)) return next()
       ctx.emit('pixies/interaction', {
         kind: 'question',
         sessionId: request.agent?.id ?? '',

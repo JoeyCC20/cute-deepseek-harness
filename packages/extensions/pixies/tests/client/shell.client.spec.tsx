@@ -17,6 +17,7 @@ import type {
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createPixiesStore } from '../../src/client/store.ts'
 import {
+  cancelPixiesSession,
   createPixiesSessionSelection,
   defaultPixiesMessages,
   followPixiesSession,
@@ -1394,12 +1395,220 @@ describe('promptPixiesSession (phase 3 / phase 5 / phase 10)', () => {
   })
 })
 
+describe('cancelPixiesSession (shortcut stop / replace)', () => {
+  interface CancelRecord { id: string }
+
+  /** A retained-reference fake with an optional cancel response. */
+  function sessionsWithCancel(opts: {
+    state?: SessionListState
+    response?: () => { ok: boolean; error?: { code: string; message: string } }
+  } = {}): {
+    sessions: ISessions
+    cancels: CancelRecord[]
+    created: string[]
+    usingIds: string[]
+  } {
+    const cancels: CancelRecord[] = []
+    const created: string[] = []
+    const usingIds: string[] = []
+    const sessions = {
+      list: {
+        getSnapshot: () => opts.state ?? listState(['a'], 'a'),
+        subscribe: () => () => {},
+      },
+      create: async (): Promise<string> => {
+        const id = `created-${created.length + 1}`
+        created.push(id)
+        return id
+      },
+      using: async (id: string, _options: unknown, operation: (reference: unknown) => unknown) => {
+        usingIds.push(id)
+        const response = opts.response?.() ?? { ok: true }
+        const reference = {
+          ready: Promise.resolve(),
+          binding: {
+            sessionId: id,
+            session: {
+              cancel: (): Promise<unknown> => {
+                cancels.push({ id })
+                return Promise.resolve(response)
+              },
+            },
+          },
+        }
+        return await operation(reference)
+      },
+    } as unknown as ISessions
+    return { sessions, cancels, created, usingIds }
+  }
+
+  it('cancels the followed session through a retained reference', async () => {
+    const { sessions, cancels, created, usingIds } = sessionsWithCancel()
+
+    await cancelPixiesSession(sessions)
+
+    expect(cancels).toEqual([{ id: 'a' }])
+    expect(usingIds).toEqual(['a'])
+    expect(created).toEqual([])
+  })
+
+  it('cancels the shell-selected session', async () => {
+    const { sessions, cancels } = sessionsWithCancel({ state: listState(['a', 'b'], 'a') })
+    const selection = createPixiesSessionSelection()
+    selection.set(sid('b'))
+
+    await cancelPixiesSession(sessions, selection)
+
+    expect(cancels).toEqual([{ id: 'b' }])
+  })
+
+  it('does nothing when the profile has no session', async () => {
+    const { sessions, cancels, usingIds } = sessionsWithCancel({ state: listState([], undefined) })
+
+    await cancelPixiesSession(sessions)
+
+    expect(cancels).toEqual([])
+    expect(usingIds).toEqual([])
+  })
+
+  it('treats an unattached agent as already idle', async () => {
+    const { sessions } = sessionsWithCancel({
+      response: () => ({ ok: false, error: { code: 'session/not-found', message: 'not attached' } }),
+    })
+
+    await expect(cancelPixiesSession(sessions)).resolves.toBeUndefined()
+  })
+
+  it('surfaces other cancel failures', async () => {
+    const { sessions } = sessionsWithCancel({
+      response: () => ({ ok: false, error: { code: 'transport', message: 'host down' } }),
+    })
+
+    await expect(cancelPixiesSession(sessions)).rejects.toThrow('transport: host down')
+  })
+})
+
+describe('voice-command modes and task stop', () => {
+  /** Mount with both the transcript and cancel callbacks recorded. */
+  function modeBench(): {
+    store: ReturnType<typeof createPixiesStore>
+    container: HTMLElement
+    bridge: ReturnType<typeof fakeBridge>
+    cancel: ReturnType<typeof vi.fn>
+    finals: string[]
+    listening: () => boolean
+    dispose: () => void
+  } {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const bridge = fakeBridge()
+    const cancel = vi.fn()
+    const finals: string[] = []
+    let disposer: (() => void) | undefined
+    act(() => {
+      disposer = mountPixiesShell(
+        container, store, defaultPixiesMessages, bridge.bridge,
+        (text) => { finals.push(text) }, undefined, cancel,
+      )
+    })
+    return {
+      store, container, bridge, cancel, finals,
+      listening: () => container.querySelector('[data-testid="pixies-mini"]')!.hasAttribute('data-listening'),
+      dispose: () => { act(() => { disposer?.() }); container.remove() },
+    }
+  }
+
+  it('a replace round cancels the running turn before submitting its draft', () => {
+    const b = modeBench()
+    act(() => { b.bridge.emitVoiceCommand({ type: 'start', mode: 'replace' }) })
+    expect(b.cancel).toHaveBeenCalledTimes(1)
+    expect(b.listening()).toBe(true)
+
+    act(() => { b.bridge.emitSpeech({ type: 'partial', text: '打断一下' }) })
+    act(() => { b.bridge.emitVoiceCommand({ type: 'stop' }) })
+    expect(b.finals).toEqual(['打断一下'])
+    expect(b.cancel).toHaveBeenCalledTimes(1)
+    b.dispose()
+  })
+
+  it('a queue round leaves the running turn alone and still submits', () => {
+    const b = modeBench()
+    act(() => { b.bridge.emitVoiceCommand({ type: 'start', mode: 'queue' }) })
+    act(() => { b.bridge.emitSpeech({ type: 'partial', text: '稍后处理' }) })
+    act(() => { b.bridge.emitVoiceCommand({ type: 'stop' }) })
+
+    expect(b.cancel).not.toHaveBeenCalled()
+    expect(b.finals).toEqual(['稍后处理'])
+    b.dispose()
+  })
+
+  it('the stop signal cancels without submitting the recognized draft', () => {
+    const b = modeBench()
+    act(() => { b.bridge.emitVoiceCommand({ type: 'start', mode: 'queue' }) })
+    act(() => { b.bridge.emitSpeech({ type: 'partial', text: '不要提交' }) })
+    act(() => { b.bridge.emitVoiceCommand({ type: 'cancel' }) })
+
+    expect(b.cancel).toHaveBeenCalledTimes(1)
+    expect(b.finals).toEqual([])
+    expect(b.listening()).toBe(false)
+    b.dispose()
+  })
+
+  it('a running replace round shows the stopped task without speaking it', () => {
+    const b = modeBench()
+    act(() => { b.bridge.emitMode('expanded') })
+    act(() => { b.store.beginThinking('session-1') })
+    act(() => { b.bridge.emitVoiceCommand({ type: 'start', mode: 'replace' }) })
+
+    expect(b.cancel).toHaveBeenCalledTimes(1)
+    expect(b.container.textContent).toContain(defaultPixiesMessages.taskStopped)
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')?.getAttribute('data-mood'))
+      .not.toBe('thinking')
+    expect(b.bridge.calls.filter(call => call.startsWith('speakReply:'))).toEqual([])
+    b.dispose()
+  })
+
+  it('an idle replace round shows and speaks no stop feedback', () => {
+    const b = modeBench()
+    act(() => { b.bridge.emitVoiceCommand({ type: 'start', mode: 'replace' }) })
+
+    expect(b.cancel).toHaveBeenCalledTimes(1)
+    expect(b.store.getState().messages.some(message => message.text === defaultPixiesMessages.taskStopped))
+      .toBe(false)
+    expect(b.bridge.calls.filter(call => call.startsWith('speakReply:'))).toEqual([])
+    b.dispose()
+  })
+
+  it('discards a final transcript emitted after the stop signal', () => {
+    const b = modeBench()
+    act(() => { b.bridge.emitVoiceCommand({ type: 'start', mode: 'queue' }) })
+    act(() => { b.bridge.emitSpeech({ type: 'partial', text: '不要提交' }) })
+    act(() => { b.bridge.emitVoiceCommand({ type: 'cancel' }) })
+    act(() => { b.bridge.emitSpeech({ type: 'final', text: '不要提交' }) })
+
+    expect(b.finals).toEqual([])
+    expect(b.cancel).toHaveBeenCalledTimes(1)
+    b.dispose()
+  })
+
+  it('ignores a malformed mode from the wire', () => {
+    const b = modeBench()
+    act(() => { b.bridge.emitVoiceCommand({ type: 'start', mode: 'bogus' }) })
+
+    expect(b.listening()).toBe(false)
+    expect(b.cancel).not.toHaveBeenCalled()
+    b.dispose()
+  })
+})
+
 describe('expanded conversation interactions', () => {
   /** Mount a shell with a bridge, expand it, and return the interesting nodes. */
   function bench(options: { readonly mode?: PixiesShellMode } = {}): {
     store: ReturnType<typeof createPixiesStore>
     container: HTMLElement
     bridge: ReturnType<typeof fakeBridge>
+    cancel: ReturnType<typeof vi.fn>
     input: () => HTMLTextAreaElement
     send: () => HTMLButtonElement
     dispose: () => void
@@ -1408,16 +1617,21 @@ describe('expanded conversation interactions', () => {
     const container = document.createElement('div')
     document.body.appendChild(container)
     const bridge = fakeBridge(options)
+    const cancel = vi.fn()
     const sent: string[] = []
     let disposer: (() => void) | undefined
     act(() => {
-      disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge.bridge, (text) => { sent.push(text) })
+      disposer = mountPixiesShell(
+        container, store, defaultPixiesMessages, bridge.bridge,
+        (text) => { sent.push(text) }, undefined, cancel,
+      )
     })
     act(() => { bridge.emitMode('expanded') })
     return {
       store,
       container,
       bridge,
+      cancel,
       input: () => container.querySelector('[data-testid="pixies-input"]') as HTMLTextAreaElement,
       send: () => container.querySelector('[data-testid="pixies-send"]') as HTMLButtonElement,
       dispose: () => { act(() => { disposer?.() }); container.remove() },
@@ -1454,6 +1668,26 @@ describe('expanded conversation interactions', () => {
     fireEvent.click(send)
     expect(b.container.textContent).toContain('走起')
     expect(b.input().value).toBe('')
+    b.dispose()
+  })
+
+  it('swaps Send for Stop while a turn runs and shows the stopped task', () => {
+    const b = bench()
+    act(() => { b.store.beginThinking('session-1') })
+    const stop = b.container.querySelector('[data-testid="pixies-stop"]') as HTMLButtonElement
+    expect(stop).not.toBeNull()
+    expect(stop.getAttribute('aria-label')).toBe(defaultPixiesMessages.stop)
+    expect(b.container.querySelector('[data-testid="pixies-send"]')).toBeNull()
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')?.textContent)
+      .toBe(defaultPixiesMessages.thinking)
+
+    fireEvent.click(stop)
+
+    expect(b.cancel).toHaveBeenCalledTimes(1)
+    expect(b.container.textContent).toContain(defaultPixiesMessages.taskStopped)
+    expect(b.bridge.calls.filter(call => call.startsWith('speakReply:'))).toEqual([])
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    expect(b.container.querySelector('[data-testid="pixies-send"]')).not.toBeNull()
     b.dispose()
   })
 

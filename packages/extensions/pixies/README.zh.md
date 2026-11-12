@@ -72,6 +72,7 @@ bundle patch 插入宿主行；Web 客户端按包的 manifest 声明解析 clie
 | [`src/client/window-drag.ts`](src/client/window-drag.ts) | 带阈值的跨显示器指针拖拽。 |
 | [`src/client/feed.ts`](src/client/feed.ts) | 把会话事件折叠进可见 store。 |
 | [`src/client/locale.ts`](src/client/locale.ts) | 由 locale 持有的产品文案。 |
+| — | 不发布运行时 invariant companion，因为该插件只观察 waterfall 并折叠已记录的 Session 事件；此处不存在会彼此偏离的独立观察。 |
 
 </details>
 
