@@ -2,7 +2,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   DEFAULT_PANEL_SETTINGS,
+  MIN_PANEL_VISIBLE_MS,
   panelHideDelay,
+  panelReadingMs,
   parsePanelSettings,
 } from '../src/panel-settings.ts'
 
@@ -31,16 +33,38 @@ describe('parsePanelSettings', () => {
   })
 })
 
+describe('panelReadingMs', () => {
+  it('floors empty and tiny results at the minimum visible time', () => {
+    expect(MIN_PANEL_VISIBLE_MS).toBe(10_000)
+    expect(panelReadingMs(0)).toBe(10_000)
+    expect(panelReadingMs(-5)).toBe(10_000)
+    expect(panelReadingMs(1)).toBe(10_000)
+    expect(panelReadingMs(Number.NaN)).toBe(10_000)
+  })
+
+  it('grows with the visible character count at a normal reading speed', () => {
+    expect(panelReadingMs(100)).toBe(15_000)
+    expect(panelReadingMs(200)).toBe(30_000)
+  })
+})
+
 describe('panelHideDelay', () => {
-  it('hides a non-interactive panel after the configured delay', () => {
+  it('keeps a non-interactive result visible for at least ten seconds', () => {
     expect(panelHideDelay(DEFAULT_PANEL_SETTINGS, false)).toBe(10_000)
-    expect(panelHideDelay({ enabled: true, autoHideMs: 2500 }, false)).toBe(2500)
+    expect(panelHideDelay({ enabled: true, autoHideMs: 2500 }, false)).toBe(10_000)
+    expect(panelHideDelay({ enabled: true, autoHideMs: 2500 }, false, 0)).toBe(10_000)
+  })
+
+  it('extends the delay for longer results but honours a larger user floor', () => {
+    expect(panelHideDelay(DEFAULT_PANEL_SETTINGS, false, 100)).toBe(15_000)
+    expect(panelHideDelay(DEFAULT_PANEL_SETTINGS, false, 200)).toBe(30_000)
+    expect(panelHideDelay({ enabled: true, autoHideMs: 30_000 }, false, 100)).toBe(30_000)
   })
 
   it('exempts choice panels, disabled panels, and disabled auto-hide', () => {
-    expect(panelHideDelay(DEFAULT_PANEL_SETTINGS, true)).toBeNull()
-    expect(panelHideDelay({ enabled: false, autoHideMs: 1000 }, false)).toBeNull()
-    expect(panelHideDelay({ enabled: true, autoHideMs: null }, false)).toBeNull()
-    expect(panelHideDelay({ enabled: true, autoHideMs: 0 }, false)).toBeNull()
+    expect(panelHideDelay(DEFAULT_PANEL_SETTINGS, true, 500)).toBeNull()
+    expect(panelHideDelay({ enabled: false, autoHideMs: 1000 }, false, 500)).toBeNull()
+    expect(panelHideDelay({ enabled: true, autoHideMs: null }, false, 500)).toBeNull()
+    expect(panelHideDelay({ enabled: true, autoHideMs: 0 }, false, 500)).toBeNull()
   })
 })

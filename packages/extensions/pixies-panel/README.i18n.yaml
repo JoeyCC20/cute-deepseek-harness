@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/extensions/pixies-panel/README.md
-README.md: 67359734fe6aa31b4c5edb245c0e682dfdc7df65
-README.zh.md: 63f3bb0472026ca137ab53d790e6fcbbf53427a2
+README.md: 0e0a47c3d035160cfb13caf702a6b2a85ecc4328
+README.zh.md: 8cd0844a0d885d28882ffa5097531c345146561e

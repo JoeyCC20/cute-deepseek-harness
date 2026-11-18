@@ -61,7 +61,10 @@ const MINI_SIZE = { width: 112, height: 112 }
 const SCREEN_MARGIN = 12
 const MINI_MARGIN = 8
 /** The standalone result panel sits below the mini avatar, still top-right. */
-const PANEL_SIZE = { width: 380, height: 460 }
+const PANEL_WIDTH = 380
+const PANEL_MIN_HEIGHT = 88
+/** Mirrors the renderer's scroll ceiling in `dsh-pixies/client/panel`. */
+const PANEL_MAX_HEIGHT = 420
 const PANEL_MARGIN = 12
 const PANEL_TOP_OFFSET = MINI_SIZE.height + MINI_MARGIN + 4
 const SHORTCUT = 'CommandOrControl+Shift+P'
@@ -597,6 +600,7 @@ async function main(): Promise<void> {
   let settingsWindow: Electron.BrowserWindow | undefined
   let panelWindow: Electron.BrowserWindow | undefined
   let panelHideTimer: ReturnType<typeof setTimeout> | undefined
+  let panelHeight = PANEL_MIN_HEIGHT
   let panelSettings = loadPanelSettings()
   // The Remote Event WebSocket bypasses `protocol.handle`, so it needs its own
   // Host authentication (Desktop does exactly this for its main window). All
@@ -670,8 +674,8 @@ async function main(): Promise<void> {
    */
   const createPanelWindow = (): void => {
     const window = new BrowserWindow({
-      width: PANEL_SIZE.width,
-      height: PANEL_SIZE.height,
+      width: PANEL_WIDTH,
+      height: PANEL_MIN_HEIGHT,
       show: false,
       frame: false,
       resizable: false,
@@ -705,20 +709,47 @@ async function main(): Promise<void> {
     void window.loadURL(`${SCHEME}://app/index.html?pixiesPanel=1`)
   }
 
+  /** Pin the panel below the avatar for its current content height. */
+  const positionPanel = (): void => {
+    if (panelWindow === undefined || panelWindow.isDestroyed()) return
+    const base = topRightPosition(
+      { width: PANEL_WIDTH, height: panelHeight },
+      screen.getPrimaryDisplay().workArea,
+      PANEL_MARGIN,
+    )
+    panelWindow.setPosition(base.x, base.y + PANEL_TOP_OFFSET)
+  }
+
+  /** Clamp one measured content height and resize the window in place. */
+  const resizePanel = (height: unknown): void => {
+    if (typeof height !== 'number' || !Number.isFinite(height)) return
+    if (panelWindow === undefined || panelWindow.isDestroyed()) return
+    const clamped = Math.min(PANEL_MAX_HEIGHT, Math.max(PANEL_MIN_HEIGHT, Math.ceil(height)))
+    if (clamped === panelHeight) return
+    panelHeight = clamped
+    panelWindow.setSize(PANEL_WIDTH, clamped)
+    positionPanel()
+  }
+
   /** Show (or refresh) the panel for one result and restart its auto-hide. */
-  const showPanel = (interactive: boolean): void => {
+  const showPanel = (interactive: boolean, characters: number): void => {
     if (!panelSettings.enabled) return
     if (panelWindow === undefined || panelWindow.isDestroyed()) return
     clearPanelHideTimer()
-    const base = topRightPosition(PANEL_SIZE, screen.getPrimaryDisplay().workArea, PANEL_MARGIN)
-    panelWindow.setPosition(base.x, base.y + PANEL_TOP_OFFSET)
+    positionPanel()
     panelWindow.showInactive()
-    const delay = panelHideDelay(panelSettings, interactive)
+    const delay = panelHideDelay(panelSettings, interactive, characters)
     if (delay !== null) panelHideTimer = setTimeout(() => { hidePanel() }, delay)
   }
 
-  ipcMain.handle('pixies:panel:show', (_event, interactive: unknown) => {
-    showPanel(interactive === true)
+  ipcMain.handle('pixies:panel:show', (_event, interactive: unknown, characters: unknown) => {
+    const count = typeof characters === 'number' && Number.isFinite(characters)
+      ? Math.max(0, Math.floor(characters))
+      : 0
+    showPanel(interactive === true, count)
+  })
+  ipcMain.handle('pixies:panel:resize', (_event, height: unknown) => {
+    resizePanel(height)
   })
   ipcMain.handle('pixies:panel:hide', () => { hidePanel() })
   ipcMain.handle('pixies:panel:settings:get', () => panelSettings)

@@ -64,9 +64,13 @@ contextBridge.exposeInMainWorld('dshPixies', {
     ipcRenderer.on('pixies:voice-command', channel)
     return () => { ipcRenderer.removeListener('pixies:voice-command', channel) }
   },
-  /** Wake the standalone result panel for one result; choice panels never auto-hide. */
-  showResultPanel: (interactive: boolean): void => {
-    void ipcRenderer.invoke('pixies:panel:show', interactive)
+  /** Wake the result panel for one result with its visible character count. */
+  showResultPanel: (interactive: boolean, characters: number): void => {
+    void ipcRenderer.invoke('pixies:panel:show', interactive, characters)
+  },
+  /** Match the panel window height to the rendered result. */
+  setPanelHeight: (height: number): void => {
+    void ipcRenderer.invoke('pixies:panel:resize', height)
   },
   /** Hide the panel from its close button; the next result wakes it again. */
   hideResultPanel: (): void => { void ipcRenderer.invoke('pixies:panel:hide') },

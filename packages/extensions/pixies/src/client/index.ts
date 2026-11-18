@@ -20,7 +20,7 @@ import {
 } from './models.ts'
 import { mountPixiesSettings } from './settings.tsx'
 import { createPixiesPanelController } from './panel-answerer.ts'
-import { resolvePixiesPanelBridge } from './panel-bridge.ts'
+import { panelVisibleCharacters, resolvePixiesPanelBridge } from './panel-bridge.ts'
 import { mountPixiesResultPanel } from './panel.tsx'
 import {
   cancelPixiesSession,
@@ -120,7 +120,7 @@ function isPixiesPanelFace(): boolean {
 function applyPixiesPanelFace(ctx: ClientContext): void {
   const bridge = resolvePixiesPanelBridge()
   const controller = createPixiesPanelController((payload) => {
-    bridge?.showResultPanel(payload.interactive)
+    bridge?.showResultPanel(payload.interactive, panelVisibleCharacters(payload))
   })
   const root = mountPixiesResultPanel({ controller, bridge })
   ctx.effect(() => () => {

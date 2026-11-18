@@ -197,6 +197,12 @@ export interface PixiesPanelMessages {
   readonly panelSubmit?: string
   /** Fallback alt text for a result image. */
   readonly panelImageAlt?: string
+  /** Copy button label inside a rendered Markdown code fence. */
+  readonly markdownCopyLabel?: string
+  /** Confirmation after copying a Markdown code fence. */
+  readonly markdownCopiedLabel?: string
+  /** Heading for rendered Markdown footnotes. */
+  readonly markdownFootnotes?: string
   /** Section headline for result-panel preferences. */
   readonly panelSection?: string
   /** Label of the master result-panel switch. */
@@ -310,6 +316,9 @@ export const defaultPixiesMessages: PixiesResolvedMessages = {
   panelClose: '关闭面板',
   panelSubmit: '提交',
   panelImageAlt: '结果图片',
+  markdownCopyLabel: '复制',
+  markdownCopiedLabel: '已复制',
+  markdownFootnotes: '脚注',
   panelSection: '结果面板',
   panelEnable: '显示结果面板',
   panelAutoHide: '自动隐藏',

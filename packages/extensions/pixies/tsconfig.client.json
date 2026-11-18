@@ -36,6 +36,9 @@
       "path": "../pixies-panel"
     },
     {
+      "path": "../../client/ui-primitives"
+    },
+    {
       "path": "../../typert/protocol"
     }
   ]

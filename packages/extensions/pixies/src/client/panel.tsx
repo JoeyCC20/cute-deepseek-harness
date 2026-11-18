@@ -6,10 +6,13 @@
  */
 
 import {
-  createElement, useEffect, useState,
+  createElement, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState,
   type CSSProperties, type ReactElement,
 } from 'react'
-import { createRoot, type Root } from 'react-dom/client'
+import { createRoot } from 'react-dom/client'
+import {
+  MarkdownDelegateProvider, MarkdownText, type MarkdownLabels,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import { panelChoiceId } from '@deepseek-ai/dsh-pixies-panel/types'
 import type { AskUserQuestionItem } from '@deepseek-ai/dsh-user-questions/types'
 import {
@@ -18,9 +21,12 @@ import {
 import type { PixiesPanelController } from './panel-answerer.ts'
 import { panelImageUrl, type PixiesPanelBridge } from './panel-bridge.ts'
 
+/** Ceiling shared with the Electron shell's clamp; longer results scroll inside it. */
+const PANEL_MAX_HEIGHT = 420
+
 const ROOT: CSSProperties = {
-  boxSizing: 'border-box', height: '100vh', overflowY: 'auto',
-  padding: '14px 16px 18px', background: 'rgba(255,255,255,.16)',
+  boxSizing: 'border-box', width: '100%', maxHeight: PANEL_MAX_HEIGHT, overflowY: 'auto',
+  padding: '14px 16px 18px',
   color: '#1f2329', fontFamily: '-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif',
   fontSize: 13, lineHeight: 1.55,
 }
@@ -78,11 +84,31 @@ export function PixiesResultPanel(props: PanelProps): ReactElement {
   const { controller, bridge, copy } = props
   const [snapshot, setSnapshot] = useState(controller.getSnapshot())
   const [selected, setSelected] = useState<Readonly<Record<string, readonly string[]>>>({})
+  const rootRef = useRef<HTMLDivElement>(null)
+  const markdownLabels = useMemo<MarkdownLabels>(() => ({
+    code: { copyLabel: copy.markdownCopyLabel, copiedLabel: copy.markdownCopiedLabel },
+    footnotes: copy.markdownFootnotes,
+  }), [copy.markdownCopyLabel, copy.markdownCopiedLabel, copy.markdownFootnotes])
+  const openExternalLink = useCallback((href: string): void => {
+    if (bridge !== undefined) void bridge.openExternal(href)
+  }, [bridge])
   useEffect(() => controller.subscribe(() => { setSnapshot(controller.getSnapshot()) }), [controller])
   useEffect(() => { setSelected({}) }, [snapshot.pending])
+  useLayoutEffect(() => {
+    const node = rootRef.current
+    if (node === null || bridge === undefined || typeof ResizeObserver === 'undefined') return undefined
+    const report = (): void => { bridge.setPanelHeight(Math.ceil(node.getBoundingClientRect().height)) }
+    report()
+    const observer = new ResizeObserver(report)
+    observer.observe(node)
+    return () => { observer.disconnect() }
+  }, [bridge])
 
   const pending = snapshot.pending
-  if (pending === undefined) return createElement('div', { style: ROOT })
+  if (pending === undefined) return createElement(MarkdownDelegateProvider, {
+    openExternalLink,
+    children: createElement('div', { ref: rootRef, style: ROOT }),
+  })
   const { payload, request } = pending
 
   const close = (): void => {
@@ -118,7 +144,12 @@ export function PixiesResultPanel(props: PanelProps): ReactElement {
           })))
         break
       case 'text':
-        blocks.push(createElement('div', { key: index, style: { ...BLOCK, ...TEXT } }, item.content))
+        blocks.push(item.format === 'markdown'
+          ? createElement('div', { key: index, style: BLOCK },
+            createElement(MarkdownText, {
+              text: item.content, streaming: false, labels: markdownLabels, variant: 'compact',
+            }))
+          : createElement('div', { key: index, style: { ...BLOCK, ...TEXT } }, item.content))
         break
       case 'link':
         blocks.push(createElement('div', { key: index, style: BLOCK },
@@ -145,30 +176,61 @@ export function PixiesResultPanel(props: PanelProps): ReactElement {
     }
   }
 
-  return createElement('div', { style: ROOT },
-    createElement('div', { style: HEADER },
-      createElement('div', { style: TITLE }, payload.title ?? copy.panelTitle),
-      createElement('button', {
-        type: 'button', style: CLOSE, 'aria-label': copy.panelClose, onClick: close,
-      }, createElement(CloseMark))),
-    ...blocks,
-    ...snapshot.awaitingAnswer
-      ? [createElement('button', { key: 'submit', type: 'button', style: SUBMIT, onClick: submit }, copy.panelSubmit)]
-      : [])
+  return createElement(MarkdownDelegateProvider, {
+    openExternalLink,
+    children: createElement('div', { ref: rootRef, style: ROOT },
+      createElement('div', { style: HEADER },
+        createElement('div', { style: TITLE }, payload.title ?? copy.panelTitle),
+        createElement('button', {
+          type: 'button', style: CLOSE, 'aria-label': copy.panelClose, onClick: close,
+        }, createElement(CloseMark))),
+      ...blocks,
+      ...snapshot.awaitingAnswer
+        ? [createElement('button', { key: 'submit', type: 'button', style: SUBMIT, onClick: submit }, copy.panelSubmit)]
+        : []),
+  })
+}
+
+/** Handle the caller uses to tear down the standalone panel face. */
+export interface PixiesResultPanelHandle {
+  /** Unmount the panel and restore the generic app root. */
+  readonly unmount: () => void
 }
 
 /**
- * Mount the panel face into `#root`.
+ * Mount the panel face into its own overlay node. Every window loads the full
+ * web app into `#root`, so creating a second React root there would fight it.
+ * The injected `body>*:not([data-pixies-shell]){display:none!important}` also
+ * hides any body child without that marker, however the node is styled. The
+ * web app's opaque white body would otherwise cover the window's vibrancy.
  * @param options - controller, bridge, and optional localized copy overrides.
- * @returns the React root, unmounted by the caller on plugin disposal.
+ * @returns a handle that restores the DOM on plugin disposal.
  */
-export function mountPixiesResultPanel(options: PixiesResultPanelMount): Root {
-  const host = document.getElementById('root')
-  if (host === null) throw new Error('pixies result panel: #root is missing')
+export function mountPixiesResultPanel(options: PixiesResultPanelMount): PixiesResultPanelHandle {
+  const backgrounds = [document.documentElement, document.body].map(element => ({
+    element,
+    value: element.style.getPropertyValue('background'),
+    priority: element.style.getPropertyPriority('background'),
+  }))
+  for (const { element } of backgrounds) element.style.setProperty('background', 'transparent', 'important')
+  const host = document.createElement('div')
+  host.id = 'pixies-result-panel'
+  host.setAttribute('data-pixies-shell', '')
+  host.style.cssText = 'position:fixed;inset:0;z-index:2147483647'
+  document.body.append(host)
   const root = createRoot(host)
   root.render(createElement(PixiesResultPanel, {
     ...options,
     copy: resolvePixiesMessages(options.messages),
   }))
-  return root
+  return {
+    unmount: () => {
+      root.unmount()
+      host.remove()
+      for (const { element, value, priority } of backgrounds) {
+        if (value === '') element.style.removeProperty('background')
+        else element.style.setProperty('background', value, priority)
+      }
+    },
+  }
 }

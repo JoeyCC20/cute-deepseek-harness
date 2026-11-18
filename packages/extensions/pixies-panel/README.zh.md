@@ -124,7 +124,7 @@ kind: "package-reference"
 - **非交互面板借用展示专用问题** — 若通用问题 UI 先于面板 answerer 认领请求，会显示一个占位提示；Pixies 桌面应用会先挂载面板 answerer。
 - **面板有界且短暂** — 每次调用最多十二个条目，窗口是轻量呈现表面，不是文档查看器或持久记录；持久事实保存在 Session log 的 `tool/result.meta` 中。
 - **本地图片依赖 Pixies Host** — 本地路径只在 Host 文件路由可用时才能渲染；远程图片必须是绝对 http(s) URL。
-- **Markdown 文字按原文显示** — v1 保持面板轻量：`format: 'markdown'` 保留源文本而不做渲染。
+- **Markdown 会渲染，原始 HTML 不会** — `format: 'markdown'` 会渲染 GFM 标题、列表、表格、粗体、围栏代码与链接（链接在外部浏览器打开）；出于安全考虑原始 HTML 保持字面文本。结构化结果请优先使用 Markdown。
 - **不新增 Session 事件** — 面板是 `tool/call` 参数与 `tool/result.meta` 的纯投影，因此在本插件出现之前记录的会话无法重建面板。
 
 <a id="dev-note"></a>

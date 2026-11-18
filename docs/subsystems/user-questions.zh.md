@@ -67,6 +67,12 @@ interface AskUserQuestionItem {
   multiSelect?: boolean
   /** Optional presentation intent for capable UIs; absent asks for the generic option list. */
   intent?: AskUserQuestionIntent
+  /**
+   * Names the specialist UI that presents this question. Generic question UIs
+   * delegate a request whose every question carries this marker so the named
+   * answerer can claim it; the human answer protocol is unchanged.
+   */
+  presentedBy?: string
 }
 ```
 

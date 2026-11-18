@@ -22,6 +22,22 @@ export const DEFAULT_PANEL_SETTINGS: PixiesPanelSettings = Object.freeze({
   autoHideMs: 10_000,
 })
 
+/** Shortest time a non-interactive result stays on screen, whatever its size. */
+export const MIN_PANEL_VISIBLE_MS = 10_000
+
+/** Normal Chinese silent reading speed, in characters per minute. */
+const READING_CHARS_PER_MINUTE = 400
+
+/**
+ * Estimate how long one result takes to read, never below the visible floor.
+ * @param characters - visible, whitespace-free character count from the renderer.
+ * @returns milliseconds of reading time.
+ */
+export function panelReadingMs(characters: number): number {
+  if (!Number.isFinite(characters) || characters <= 0) return MIN_PANEL_VISIBLE_MS
+  return Math.max(MIN_PANEL_VISIBLE_MS, Math.ceil(characters * 60_000 / READING_CHARS_PER_MINUTE))
+}
+
 /**
  * Parse one settings file or IPC payload. Unknown or hostile shapes fall back
  * field by field to the defaults, so a corrupt file never disables the panel.
@@ -46,13 +62,19 @@ export function parsePanelSettings(value: unknown): PixiesPanelSettings {
 /**
  * Decide whether one panel should auto-hide and after how long. Choice panels
  * wait for a human answer and are exempt; disabling auto-hide (`null` or zero)
- * and disabling the panel itself also return no timer.
+ * and disabling the panel itself also return no timer. The configured delay is
+ * a user floor: longer results stay visible for their estimated reading time.
  * @param settings - current validated settings.
  * @param interactive - whether the payload contains a choice item.
+ * @param characters - visible, whitespace-free character count of the result.
  * @returns the delay in milliseconds, or `null` for no auto-hide.
  */
-export function panelHideDelay(settings: PixiesPanelSettings, interactive: boolean): number | null {
+export function panelHideDelay(
+  settings: PixiesPanelSettings,
+  interactive: boolean,
+  characters = 0,
+): number | null {
   if (!settings.enabled || interactive) return null
   if (settings.autoHideMs === null || settings.autoHideMs <= 0) return null
-  return settings.autoHideMs
+  return Math.max(panelReadingMs(characters), settings.autoHideMs)
 }

@@ -2504,7 +2504,7 @@ web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可�
 
 ### `show_result_panel`
 
-向用户展示一个紧凑、自包含的结果面板。当有值得在对话记录之外查看的具体结果时调用：图片、计算或查询结果、一组链接，或用户必须做出的简短选择（确认／授权／选择）。是否值得开面板由你自己判断；不要为简短纯文本回答、中间推理步骤或进度更新调用它。每个条目都有 `kind` 字段："image"（`source` 为本地路径或 http(s) URL）、"text"（`content`，可选 `format` markdown）、"choice"（`question`、带标签的非空 `options`、可选 `multi_select`）、"link"（`label`、http(s) `url`）。choice 条目会暂停调用直到用户回答，并返回所选标签。你能否调用该工具、能否理解图片，取决于你自身的能力。
+向用户展示一个紧凑、自包含的结果面板。当有值得在对话记录之外查看的具体结果时调用：图片、计算或查询结果、一组链接，或用户必须做出的简短选择（确认／授权／选择）。是否值得开面板由你自己判断；不要为简短纯文本回答、中间推理步骤或进度更新调用它。每个条目都有 `kind` 字段："image"（`source` 为本地路径或 http(s) URL）、"text"（`content`、`format` 为 plain 或 markdown）、"choice"（`question`、带标签的非空 `options`、可选 `multi_select`）、"link"（`label`、http(s) `url`）。对 `text` 条目，只要内容有任何结构，就优先使用 `format: "markdown"` 并写真正的 Markdown 语法——标题、列表、表格、粗体、围栏代码块和链接；只有单行无结构文本才用 `"plain"`。面板会渲染 Markdown 但不渲染原始 HTML，因此切勿在 `content` 中嵌入 HTML 标签。choice 条目会暂停调用直到用户回答，并返回所选标签。你能否调用该工具、能否理解图片，取决于你自身的能力。调用后不要在回复中复述结果或说结果已在面板中展示：面板本身就是呈现。文字回复保持简短，没有补充时留空即可。
 
 ```json
 {
@@ -2541,11 +2541,11 @@ web_search 和 web_fetch 将提供方选择置于 ctx.web 之后，使模型可�
           },
           "content": {
             "type": "string",
-            "description": "text: the content to show."
+            "description": "text: content; with markdown format, write Markdown syntax (headings, lists, bold, fenced code, links)."
           },
           "format": {
             "type": "string",
-            "description": "text: plain (default) or markdown.",
+            "description": "text: markdown (preferred for structured content) or plain (one unstructured line).",
             "enum": [
               "plain",
               "markdown"

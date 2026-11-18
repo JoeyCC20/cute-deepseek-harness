@@ -11,6 +11,7 @@ import {
 } from '../../src/client/panel-answerer.ts'
 import {
   panelImageUrl,
+  panelVisibleCharacters,
   readPanelSettings,
   resolvePixiesPanelBridge,
 } from '../../src/client/panel-bridge.ts'
@@ -54,7 +55,8 @@ describe('panel-bridge wire helpers', () => {
 
   it('resolves the bridge only when every method is present', () => {
     const bridge = {
-      showResultPanel: () => {},
+      showResultPanel: (_interactive: boolean, _characters: number) => {},
+      setPanelHeight: () => {},
       hideResultPanel: () => {},
       getPanelSettings: async () => ({}),
       setPanelSettings: async () => ({}),
@@ -64,8 +66,30 @@ describe('panel-bridge wire helpers', () => {
     expect(resolvePixiesPanelBridge()).toBeUndefined()
     ;(globalThis as Record<string, unknown>).dshPixies = { showResultPanel: () => {} }
     expect(resolvePixiesPanelBridge()).toBeUndefined()
+    ;(globalThis as Record<string, unknown>).dshPixies = { ...bridge, setPanelHeight: undefined }
+    expect(resolvePixiesPanelBridge()).toBeUndefined()
     ;(globalThis as Record<string, unknown>).dshPixies = bridge
     expect(resolvePixiesPanelBridge()).toBe(bridge)
+  })
+})
+
+describe('panelVisibleCharacters', () => {
+  it('counts plain text without whitespace', () => {
+    const payload = parsePanelPayload({
+      items: [{ kind: 'text', content: '你好 世界\n第二行' }],
+    })
+    expect(panelVisibleCharacters(payload)).toBe(7)
+  })
+
+  it('projects markdown markup away and includes the other visible items', () => {
+    const payload = parsePanelPayload({
+      items: [
+        { kind: 'text', content: '# 标题\n\n**粗体** 文本', format: 'markdown' },
+        { kind: 'link', label: '文档', url: 'https://example.com' },
+        { kind: 'image', source: '/tmp/a.png', alt: '图表' },
+      ],
+    })
+    expect(panelVisibleCharacters(payload)).toBe(10)
   })
 })
 

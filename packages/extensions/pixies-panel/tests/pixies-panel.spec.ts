@@ -166,6 +166,7 @@ describe('show_result_panel tool', () => {
     expect(seen[0]?.questions[0]).toMatchObject({
       id: PIXIES_PANEL_DISPLAY_ID,
       header: PIXIES_PANEL_HEADER,
+      presentedBy: 'pixies-panel',
     })
     expect(decodePanelDetail(seen[0])).toEqual(parsePanelPayload(imageArgs))
     expect(result).toMatchObject({
@@ -190,7 +191,9 @@ describe('show_result_panel tool', () => {
       items: [{ kind: 'choice', question: 'Proceed?', options: [{ label: 'Yes' }, { label: 'No' }] }],
     })
     expect(seen).toHaveLength(1)
-    expect(seen[0]?.questions[0]).toMatchObject({ id: panelChoiceId(0), header: PIXIES_PANEL_HEADER })
+    expect(seen[0]?.questions[0]).toMatchObject({
+      id: panelChoiceId(0), header: PIXIES_PANEL_HEADER, presentedBy: 'pixies-panel',
+    })
     expect(decodePanelDetail(seen[0])?.items[0]?.kind).toBe('choice')
     expect(result).toMatchObject({ isError: false })
     expect(JSON.stringify(result)).toContain('"selected":["Yes"]')

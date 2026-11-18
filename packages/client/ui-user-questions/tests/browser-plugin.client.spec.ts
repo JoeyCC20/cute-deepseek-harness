@@ -113,6 +113,17 @@ describe('apply', () => {
     expect(b.pending.getSnapshot()).toEqual([])
   })
 
+  it('delegates specialist-owned questions without parking an unanswered draft', async () => {
+    const b = await bench()
+    const next = vi.fn(async () => ANSWER)
+    const owned = [{ id: 'panel-display', question: 'Result panel', presentedBy: 'pixies-panel' }]
+
+    await expect(b.invoke(b.agent, { questions: owned }, next)).resolves.toBe(ANSWER)
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(b.pending.getSnapshot()).toEqual([])
+  })
+
   it('projects a scoped request through one stable composer and returns its answer', async () => {
     const b = await bench()
     const next = vi.fn(async () => ANSWER)

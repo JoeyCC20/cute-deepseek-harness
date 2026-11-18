@@ -124,7 +124,7 @@ These limits define when the tool is a poor fit. They are current package constr
 - **A non-interactive panel borrows a display-only question** — a generic question UI that claims the request before the panel answerer can show a placeholder prompt; the Pixies desktop app mounts the panel answerer first.
 - **Panels are bounded and transient** — at most twelve items per call, and the window is a lightweight presentation surface, not a document viewer or a durable record; the Session log holds the durable `tool/result.meta` fact.
 - **Local images need the Pixies Host** — a local path renders only where the Host file route is available; remote images require an absolute http(s) URL.
-- **Markdown text stays verbatim** — v1 keeps the panel lightweight: `format: 'markdown'` preserves the source text instead of rendering it.
+- **Markdown renders; raw HTML does not** — `format: 'markdown'` renders GFM headings, lists, tables, bold, fenced code and links (links open externally); raw HTML stays literal for safety. Prefer Markdown for structured results.
 - **No new Session event** — the panel is a pure projection of `tool/call` arguments and `tool/result.meta`, so sessions recorded before this plugin existed cannot reconstruct a panel.
 
 <a id="dev-note"></a>

@@ -4,6 +4,8 @@
  * wire payloads and keeps local images on the authenticated Host file route.
  * @module @deepseek-ai/dsh-pixies/client/panel-bridge
  */
+import { extractMarkdownPlainText } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { PixiesPanelPayload } from '@deepseek-ai/dsh-pixies-panel/types'
 
 /** Settings snapshot as returned by the main process. */
 export interface PixiesPanelSettingsView {
@@ -15,8 +17,10 @@ export interface PixiesPanelSettingsView {
 
 /** Structural face of `window.dshPixies` methods the panel needs. */
 export interface PixiesPanelBridge {
-  /** Wake the panel window for one result. */
-  readonly showResultPanel: (interactive: boolean) => void
+  /** Wake the panel window for one result and its visible reading length. */
+  readonly showResultPanel: (interactive: boolean, characters: number) => void
+  /** Resize the window to the measured content height. */
+  readonly setPanelHeight: (height: number) => void
   /** Hide the window without destroying its renderer. */
   readonly hideResultPanel: () => void
   /** Read the persisted preferences. */
@@ -57,6 +61,37 @@ export function panelImageUrl(source: string): string {
 }
 
 /**
+ * Count the visible characters of one result so the shell can keep it on
+ * screen long enough to read. Markdown markup is projected away first.
+ * @param payload - claimed result-panel payload.
+ * @returns the number of non-whitespace visible characters.
+ */
+export function panelVisibleCharacters(payload: PixiesPanelPayload): number {
+  const count = (text: string): number => text.replace(/\s+/g, '').length
+  let characters = 0
+  for (const item of payload.items) {
+    switch (item.kind) {
+      case 'text':
+        characters += count(item.format === 'markdown'
+          ? extractMarkdownPlainText(item.content)
+          : item.content)
+        break
+      case 'choice':
+        characters += count(item.question)
+        for (const option of item.options) characters += count(option.label)
+        break
+      case 'link':
+        characters += count(item.label)
+        break
+      case 'image':
+        characters += count(item.alt ?? '')
+        break
+    }
+  }
+  return characters
+}
+
+/**
  * Read the panel bridge from the global scope when every method is present.
  * @returns the bridge, or undefined outside the Pixies Electron shell.
  */
@@ -65,6 +100,7 @@ export function resolvePixiesPanelBridge(): PixiesPanelBridge | undefined {
   if (typeof candidate !== 'object' || candidate === null) return undefined
   const bridge = candidate as Record<string, unknown>
   if (typeof bridge.showResultPanel !== 'function'
+    || typeof bridge.setPanelHeight !== 'function'
     || typeof bridge.hideResultPanel !== 'function'
     || typeof bridge.getPanelSettings !== 'function'
     || typeof bridge.setPanelSettings !== 'function'

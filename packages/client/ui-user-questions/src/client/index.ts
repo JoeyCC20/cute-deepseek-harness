@@ -58,6 +58,10 @@ async function answerQuestion(
   next: ClientQuestionNext,
   registerPendingInteraction: PendingInteractionPublisher<PendingQuestion>,
 ): Promise<ClientQuestionAnswer> {
+  // A specialist UI owns these questions. Claiming them here would park an
+  // unanswered draft in the transcript and stall the Host waterfall, so let
+  // the owning answerer decide instead.
+  if (request.questions.every(question => question.presentedBy !== undefined)) return next()
   const sessionId = (ctx.sessions as ISessions).scopeOf(owner)
   if (sessionId === undefined) return next()
   const pending = new PendingQuestion(sessionId, request.questions, request.signal)

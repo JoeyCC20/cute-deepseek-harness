@@ -2496,7 +2496,7 @@ web_search and web_fetch keep provider selection behind ctx.web so model-visible
 
 ### `show_result_panel`
 
-Show a compact, self-contained result panel to the user. Call it when you have a concrete result worth seeing outside the transcript: an image, a computed or queried result, a set of links, or a short choice the user must make (confirm/authorize/select). Decide for yourself whether the result benefits from a panel; do NOT call it for short plain-text answers, intermediate reasoning steps, or progress updates. Each item has a `kind` of "image" (local path or http(s) URL in `source`), "text" (`content`, optional `format` markdown), "choice" (`question`, non-empty `options` with labels, optional `multi_select`), or "link" (`label`, http(s) `url`). A choice item pauses the call until the user answers; the selected labels are returned. Whether you can call this tool, and whether you can interpret images, depends on your own capabilities.
+Show a compact, self-contained result panel to the user. Call it when you have a concrete result worth seeing outside the transcript: an image, a computed or queried result, a set of links, or a short choice the user must make (confirm/authorize/select). Decide for yourself whether the result benefits from a panel; do NOT call it for short plain-text answers, intermediate reasoning steps, or progress updates. Each item has a `kind` of "image" (local path or http(s) URL in `source`), "text" (`content`, `format` plain or markdown), "choice" (`question`, non-empty `options` with labels, optional `multi_select`), or "link" (`label`, http(s) `url`). For `text` items, prefer `format: "markdown"` and write real Markdown syntax — headings, lists, tables, bold, fenced code blocks and links — whenever the content has any structure; use `"plain"` only for one unstructured line. The panel renders Markdown and does not render raw HTML, so never embed HTML tags in `content`. A choice item pauses the call until the user answers; the selected labels are returned. Whether you can call this tool, and whether you can interpret images, depends on your own capabilities. After the call, do NOT restate the result or say that it was shown in a panel in your reply: the panel itself is the presentation. Keep the text reply brief, or empty when there is nothing to add.
 
 ```json
 {
@@ -2533,11 +2533,11 @@ Show a compact, self-contained result panel to the user. Call it when you have a
           },
           "content": {
             "type": "string",
-            "description": "text: the content to show."
+            "description": "text: content; with markdown format, write Markdown syntax (headings, lists, bold, fenced code, links)."
           },
           "format": {
             "type": "string",
-            "description": "text: plain (default) or markdown.",
+            "description": "text: markdown (preferred for structured content) or plain (one unstructured line).",
             "enum": [
               "plain",
               "markdown"
