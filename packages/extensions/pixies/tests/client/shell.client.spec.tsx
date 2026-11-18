@@ -1840,6 +1840,28 @@ describe('voice-command shortcut and spoken replies', () => {
     container.remove()
   })
 
+  it('speaks only the marked takeaway of a detailed reply', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, calls, emitMode } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
+    act(() => { emitMode('expanded') })
+
+    act(() => {
+      speak(store, 'session-1#1', '[voice]已修复登录问题[/voice]\n\n## 详情\n\n- 修改了 3 个文件\n- 跑了测试')
+    })
+    expect(calls.filter(call => call.startsWith('speakReply:'))).toEqual(['speakReply:已修复登录问题'])
+    // The full reply stays visible; only the control markers disappear.
+    expect(container.textContent).toContain('## 详情')
+    expect(container.textContent).toContain('修改了 3 个文件')
+    expect(container.textContent).not.toContain('[voice]')
+
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
   it('speaks a failed turn so a failure is not text-only', () => {
     const b = expandedBench()
     act(() => { b.store.appendMessage({ role: 'system', text: 'provider unavailable', mood: 'asking' }) })

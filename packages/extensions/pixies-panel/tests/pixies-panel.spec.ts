@@ -158,6 +158,13 @@ describe('show_result_panel tool', () => {
     expect(properties).toHaveProperty('url')
   })
 
+  it('tells the model how to mark a spoken takeaway', async () => {
+    const ctx = await setup()
+    const schema = ctx.tools.schemas().find(tool => tool.name === 'show_result_panel')
+    expect(schema?.description).toContain('[voice]...[/voice]')
+    expect(schema?.description).toContain('without a marker the whole reply is spoken')
+  })
+
   it('sends a display-only question for a non-interactive panel and returns once acknowledged', async () => {
     const seen: AskUserQuestionRequest[] = []
     const ctx = await setup((request) => { seen.push(request) })

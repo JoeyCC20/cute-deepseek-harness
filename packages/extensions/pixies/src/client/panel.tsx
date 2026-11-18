@@ -20,6 +20,7 @@ import {
 } from './locale.ts'
 import type { PixiesPanelController } from './panel-answerer.ts'
 import { panelImageUrl, type PixiesPanelBridge } from './panel-bridge.ts'
+import { visibleReplyText } from './voice-summary.ts'
 
 /** Ceiling shared with the Electron shell's clamp; longer results scroll inside it. */
 const PANEL_MAX_HEIGHT = 420
@@ -147,9 +148,9 @@ export function PixiesResultPanel(props: PanelProps): ReactElement {
         blocks.push(item.format === 'markdown'
           ? createElement('div', { key: index, style: BLOCK },
             createElement(MarkdownText, {
-              text: item.content, streaming: false, labels: markdownLabels, variant: 'compact',
+              text: visibleReplyText(item.content), streaming: false, labels: markdownLabels, variant: 'compact',
             }))
-          : createElement('div', { key: index, style: { ...BLOCK, ...TEXT } }, item.content))
+          : createElement('div', { key: index, style: { ...BLOCK, ...TEXT } }, visibleReplyText(item.content)))
         break
       case 'link':
         blocks.push(createElement('div', { key: index, style: BLOCK },

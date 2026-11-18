@@ -20,6 +20,7 @@ import {
 import type { PixiesResolvedMessages } from './locale.ts'
 import type { PixiesClientState, PixiesMessage, PixiesMessageRole, PixiesThinking } from './store.ts'
 import type { PixiesShellBridge, PixiesShellMode } from './shell.tsx'
+import { visibleReplyText } from './voice-summary.ts'
 import { usePixiesWindowDrag } from './window-drag.ts'
 
 /** Everything either view needs; the shell owns the interaction state. */
@@ -594,7 +595,7 @@ function MessageRow({ message, marker }: { message: PixiesMessage; marker: boole
       'data-mood': marker ? message.mood : undefined,
       role: marker ? 'status' : undefined,
       style: bubbleStyle(message.role, message.mood),
-    }, message.text),
+    }, visibleReplyText(message.text)),
   )
 }
 
@@ -819,7 +820,7 @@ function HistoryPopup(props: HistoryPopupProps): ReactElement {
       key: message.id,
       'data-testid': 'pixies-context-row',
       style: CONTEXT_ROW,
-    }, `${roleName(message.role, props.copy)}: ${message.text}`)),
+    }, `${roleName(message.role, props.copy)}: ${visibleReplyText(message.text)}`)),
   ),
   )
 }
@@ -1008,7 +1009,7 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
           'data-mood': live.mood,
           role: 'status',
           style: bubbleStyle('assistant', live.mood),
-        }, live.text),
+        }, visibleReplyText(live.text)),
       ) : null,
     ),
     createElement('div', { style: COMPOSER },

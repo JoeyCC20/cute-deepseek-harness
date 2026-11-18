@@ -90,7 +90,7 @@ kind: "package-reference"
 
 #### 模型看到什么
 
-模型看到生成的 [`show_result_panel` schema](../../../docs/tool-catalog.zh.md#deepseek-aidsh-pixies-panel)：可选的 `title`、有界的 `items` 数组，以及 image / text / choice / link 各类条目的专属字段。描述把是否调用面板的判断留给模型自己。
+模型看到生成的 [`show_result_panel` schema](../../../docs/tool-catalog.zh.md#deepseek-aidsh-pixies-panel)：可选的 `title`、有界的 `items` 数组，以及 image / text / choice / link 各类条目的专属字段。描述把是否调用面板的判断留给模型自己，同时也说明了 `[voice]...[/voice]` 标记：较长或细节繁多的文字回复附带一句供播报的核心结论，完整回复仍在对话页可读。
 
 #### Token 影响
 

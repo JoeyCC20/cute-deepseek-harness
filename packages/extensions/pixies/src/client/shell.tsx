@@ -17,6 +17,7 @@ import { PixiesExpandedView, PixiesIconMenu, PixiesMiniView, type PixiesConversa
 import { feedSessionEvent, type SessionEventLike } from './feed.ts'
 import { defaultPixiesMessages, resolvePixiesMessages, type PixiesPanelMessages } from './locale.ts'
 import { createPixiesStore, type PixiesMessage, type PixiesStore } from './store.ts'
+import { spokenReplyText } from './voice-summary.ts'
 
 export { defaultPixiesMessages, resolvePixiesMessages } from './locale.ts'
 export type { PixiesPanelMessages, PixiesResolvedMessages } from './locale.ts'
@@ -466,13 +467,14 @@ function ShellPanel({ store, messages, bridge, onSendText, onCancelTask, session
   }, [awaitingReply])
 
   // Voice-first results: the newest reply (or turn failure) is spoken through
-  // the host. History present at mount is never replayed aloud.
+  // the host. A marked takeaway is the whole utterance; without one the full
+  // reply is spoken. History present at mount is never replayed aloud.
   useEffect(() => {
     const newest = lastReply(state.messages)
     if (newest === undefined || newest.id === spokenIdRef.current) return
     spokenIdRef.current = newest.id
     if (newest.historical === true) return
-    if (voiceReplies && bridge?.speakReply !== undefined) bridge.speakReply(newest.text)
+    if (voiceReplies && bridge?.speakReply !== undefined) bridge.speakReply(spokenReplyText(newest.text))
   }, [state.messages, voiceReplies, bridge])
 
   useEffect(() => {

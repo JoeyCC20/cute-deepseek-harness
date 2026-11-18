@@ -18,6 +18,7 @@
     "src/client/character.tsx",
     "src/client/conversation.tsx",
     "src/client/shell.tsx",
+    "src/client/voice-summary.ts",
     "src/client/window-drag.ts",
     "src/presentation.ts",
     "src/types.ts"

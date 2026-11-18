@@ -91,6 +91,13 @@ describe('panelVisibleCharacters', () => {
     })
     expect(panelVisibleCharacters(payload)).toBe(10)
   })
+
+  it('counts a marked takeaway but not its control markers', () => {
+    const payload = parsePanelPayload({
+      items: [{ kind: 'text', content: '[voice]已修复登录问题[/voice]\n\n## 详情', format: 'markdown' }],
+    })
+    expect(panelVisibleCharacters(payload)).toBe('已修复登录问题详情'.length)
+  })
 })
 
 describe('createPixiesPanelController', () => {

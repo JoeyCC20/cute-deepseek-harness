@@ -6,6 +6,7 @@
  */
 import { extractMarkdownPlainText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PixiesPanelPayload } from '@deepseek-ai/dsh-pixies-panel/types'
+import { visibleReplyText } from './voice-summary.ts'
 
 /** Settings snapshot as returned by the main process. */
 export interface PixiesPanelSettingsView {
@@ -73,8 +74,8 @@ export function panelVisibleCharacters(payload: PixiesPanelPayload): number {
     switch (item.kind) {
       case 'text':
         characters += count(item.format === 'markdown'
-          ? extractMarkdownPlainText(item.content)
-          : item.content)
+          ? extractMarkdownPlainText(visibleReplyText(item.content))
+          : visibleReplyText(item.content))
         break
       case 'choice':
         characters += count(item.question)

@@ -70,7 +70,12 @@ const DESCRIPTION = 'Show a compact, self-contained result panel to the user. '
   + 'A choice item pauses the call until the user answers; the selected labels are returned. '
   + 'Whether you can call this tool, and whether you can interpret images, depends on your own capabilities. '
   + 'After the call, do NOT restate the result or say that it was shown in a panel in your reply: '
-  + 'the panel itself is the presentation. Keep the text reply brief, or empty when there is nothing to add.'
+  + 'the panel itself is the presentation. Keep the text reply brief, or empty when there is nothing to add. '
+  + 'Pixies reads every text reply aloud. When a reply is long, detailed, or full of markup, also give one '
+  + 'short plain-prose takeaway wrapped in `[voice]...[/voice]`: only that marked sentence is spoken, '
+  + 'while the full reply stays readable in the transcript and detailed results belong in a panel. '
+  + 'Keep the marked text free of Markdown, URLs and symbols, and omit the marker entirely for replies '
+  + 'that are already short and easy to hear — without a marker the whole reply is spoken.'
 
 /** Convert one normalized item into a user-questions item, if it needs a human answer. */
 function questionForItem(item: PixiesPanelItem, index: number, payload: PixiesPanelPayload): AskUserQuestionItem | undefined {

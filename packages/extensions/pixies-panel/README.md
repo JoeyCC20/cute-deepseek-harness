@@ -90,7 +90,7 @@ The tool returns `{ "shown": true, "items": 4, "answers": [...] }`. A `choice` i
 
 #### What the model sees
 
-The model sees the generated [`show_result_panel` schema](../../../docs/tool-catalog.md#deepseek-aidsh-pixies-panel): an optional `title`, a bounded `items` array, and the `kind`-specific fields for image, text, choice, and link items. The description leaves the decision to call the tool to the model itself.
+The model sees the generated [`show_result_panel` schema](../../../docs/tool-catalog.md#deepseek-aidsh-pixies-panel): an optional `title`, a bounded `items` array, and the `kind`-specific fields for image, text, choice, and link items. The description leaves the decision to call the tool to the model itself, and also documents the `[voice]...[/voice]` marker: a long or detailed text reply carries one short spoken takeaway, while the full reply stays readable in the transcript.
 
 #### Token effect
 
