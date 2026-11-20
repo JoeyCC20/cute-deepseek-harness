@@ -50,6 +50,7 @@ describe('result-panel item rendering', () => {
       showResultPanel: () => {},
       setPanelHeight: () => {},
       hideResultPanel: () => {},
+      setPanelHover: () => {},
       getPanelSettings: async () => ({}),
       setPanelSettings: async () => ({}),
       openExternal,
@@ -65,6 +66,31 @@ describe('result-panel item rendering', () => {
     expect(link).not.toBeNull()
     fireEvent.click(link!)
     expect(openExternal).toHaveBeenCalledWith('https://example.com')
+    handle.unmount()
+  })
+
+  it('pauses and resumes the auto-hide countdown as the pointer enters and leaves', () => {
+    const payload = parsePanelPayload({ items: [{ kind: 'text', content: '结果', format: 'plain' }] })
+    const controller = createPixiesPanelController(() => {})
+    const setPanelHover = vi.fn()
+    const bridge = {
+      showResultPanel: () => {},
+      setPanelHeight: () => {},
+      hideResultPanel: () => {},
+      setPanelHover,
+      getPanelSettings: async () => ({}),
+      setPanelSettings: async () => ({}),
+      openExternal: async () => true,
+      onPanelSettings: () => () => {},
+    } as unknown as PixiesPanelBridge
+    claim(controller, payload)
+    let handle!: ReturnType<typeof mountPixiesResultPanel>
+    act(() => { handle = mountPixiesResultPanel({ controller, bridge }) })
+    const panel = document.getElementById('pixies-result-panel')!.firstElementChild!
+    act(() => { fireEvent.mouseOver(panel) })
+    expect(setPanelHover).toHaveBeenLastCalledWith(true)
+    act(() => { fireEvent.mouseOut(panel) })
+    expect(setPanelHover).toHaveBeenLastCalledWith(false)
     handle.unmount()
   })
 

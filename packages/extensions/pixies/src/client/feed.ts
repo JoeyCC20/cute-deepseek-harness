@@ -117,13 +117,82 @@ function userText(event: SessionEventLike): string | undefined {
   return text.trim() === '' ? undefined : text
 }
 
+/** Structural view of a tool-call content block or a tool/call event body. */
+interface ToolCallLike {
+  readonly name?: unknown
+  readonly arguments?: unknown
+}
+
+/**
+ * Render one tool call for the process view. Arguments are a wire payload: only
+ * the string form is meaningful, and the name alone still identifies a call
+ * whose arguments were dropped.
+ * @param data - a tool-call content block or a tool/call event body.
+ * @returns `name(arguments)`, the bare name, or undefined when unidentifiable.
+ */
+function toolCallText(data: unknown): string | undefined {
+  if (typeof data !== 'object' || data === null) return undefined
+  const candidate = data as ToolCallLike
+  if (typeof candidate.name !== 'string' || candidate.name === '') return undefined
+  const args = typeof candidate.arguments === 'string' ? candidate.arguments : ''
+  return args === '' ? candidate.name : `${candidate.name}(${args})`
+}
+
+/**
+ * Read every tool call embedded in an assistant message's content blocks.
+ * @param content - the message's model-facing content blocks.
+ * @returns the rendered calls in block order.
+ */
+function contentToolCalls(content: readonly unknown[]): readonly string[] {
+  const calls: string[] = []
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue
+    if (Reflect.get(block, 'type') !== 'tool-call') continue
+    const text = toolCallText(block)
+    if (text !== undefined) calls.push(text)
+  }
+  return calls
+}
+
+/**
+ * Read the returned text of every tool-result block in a tool/result event.
+ * @param event - one tool/result event.
+ * @returns the returned texts in block order.
+ */
+function toolResultTexts(event: SessionEventLike): readonly string[] {
+  const data: unknown = event.data
+  if (typeof data !== 'object' || data === null) return []
+  const message: unknown = Reflect.get(data, 'message')
+  if (typeof message !== 'object' || message === null) return []
+  const content: unknown = Reflect.get(message, 'content')
+  if (!Array.isArray(content)) return []
+  const results: string[] = []
+  for (const block of content as readonly unknown[]) {
+    if (typeof block !== 'object' || block === null || Reflect.get(block, 'type') !== 'tool-result') continue
+    const parts: unknown = Reflect.get(block, 'content')
+    if (!Array.isArray(parts)) continue
+    let text = ''
+    for (const part of parts as readonly unknown[]) {
+      if (typeof part !== 'object' || part === null || Reflect.get(part, 'type') !== 'text') continue
+      const value: unknown = Reflect.get(part, 'text')
+      if (typeof value !== 'string' || value === '') continue
+      text = text === '' ? value : `${text}\n${value}`
+    }
+    if (text !== '') results.push(text)
+  }
+  return results
+}
+
 /**
  * Feed one session event into the store: assistant/message becomes the
  * character's speech; assistant/live-chunk reasoning deltas stream into the
- * collapsible thinking block; turn/start begins a thinking round, turn/end (or
- * a follow-up assistant/message) ends it. Thinking is the gap between the user
- * sending a prompt and the LLM producing its first visible reply — without
- * an explicit signal the bubble looks frozen during a multi-second call.
+ * collapsible thinking block; each settled reasoning, tool call, and tool
+ * result is written to the transcript as its own row at the moment it happens,
+ * so the conversation keeps the execution order even for turns with no reply;
+ * turn/start begins a thinking round, turn/end (or a follow-up
+ * assistant/message) ends it. Thinking is the gap between the user sending a
+ * prompt and the LLM producing its first visible reply — without an explicit
+ * signal the bubble looks frozen during a multi-second call.
  * Live prompts are already appended locally, so `user/message` is folded only
  * when replaying a session's history.
  * @param store - the Pixies store to publish into.
@@ -153,6 +222,17 @@ export function feedSessionEvent(
     if (failure !== undefined) store.appendMessage({ role: 'system', text: failure, mood: 'asking' })
     return
   }
+  if (event.type === 'tool/call') {
+    const text = toolCallText(event.data)
+    if (text !== undefined) store.appendProcess(sessionId, { kind: 'tool-call', text })
+    return
+  }
+  if (event.type === 'tool/result') {
+    for (const text of toolResultTexts(event)) {
+      store.appendProcess(sessionId, { kind: 'tool-result', text })
+    }
+    return
+  }
   if (event.type === 'assistant/live-chunk') {
     const delta = reasoningDelta(event.data)
     if (delta !== undefined) store.appendThinking(sessionId, delta)
@@ -164,6 +244,9 @@ export function feedSessionEvent(
   const rawContent: unknown = body.message.content
   store.settleThinking(sessionId, reasoningText(rawContent))
   const content = Array.isArray(rawContent) ? rawContent as readonly unknown[] : []
+  for (const text of contentToolCalls(content)) {
+    store.appendProcess(sessionId, { kind: 'tool-call', text })
+  }
   const presentation = presentationFromAssistantMessage(sessionId, event.seq, {
     turn: body.turn,
     step: body.step,

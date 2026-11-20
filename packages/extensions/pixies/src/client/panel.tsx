@@ -93,6 +93,13 @@ export function PixiesResultPanel(props: PanelProps): ReactElement {
   const openExternalLink = useCallback((href: string): void => {
     if (bridge !== undefined) void bridge.openExternal(href)
   }, [bridge])
+  const setHover = useCallback((hovered: boolean): void => {
+    bridge?.setPanelHover(hovered)
+  }, [bridge])
+  const hoverProps = {
+    onMouseEnter: () => { setHover(true) },
+    onMouseLeave: () => { setHover(false) },
+  }
   useEffect(() => controller.subscribe(() => { setSnapshot(controller.getSnapshot()) }), [controller])
   useEffect(() => { setSelected({}) }, [snapshot.pending])
   useLayoutEffect(() => {
@@ -108,7 +115,7 @@ export function PixiesResultPanel(props: PanelProps): ReactElement {
   const pending = snapshot.pending
   if (pending === undefined) return createElement(MarkdownDelegateProvider, {
     openExternalLink,
-    children: createElement('div', { ref: rootRef, style: ROOT }),
+    children: createElement('div', { ref: rootRef, style: ROOT, ...hoverProps }),
   })
   const { payload, request } = pending
 
@@ -179,7 +186,7 @@ export function PixiesResultPanel(props: PanelProps): ReactElement {
 
   return createElement(MarkdownDelegateProvider, {
     openExternalLink,
-    children: createElement('div', { ref: rootRef, style: ROOT },
+    children: createElement('div', { ref: rootRef, style: ROOT, ...hoverProps },
       createElement('div', { style: HEADER },
         createElement('div', { style: TITLE }, payload.title ?? copy.panelTitle),
         createElement('button', {

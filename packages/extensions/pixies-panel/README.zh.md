@@ -29,7 +29,7 @@ kind: "package-reference"
 
 ### 何时调用该工具
 
-当模型拿到值得在对话记录之外查看的具体结果时调用 `show_result_panel`：图片、计算或查询结果、一组链接，或者用户必须做出的简短选择。是否值得开面板由模型自行判断；简短回答、中间推理和进度更新都不适合。
+模型默认调用 `show_result_panel`：大多数回答了问题或产出了结果的轮次，都会在最终回复之前把结果放进面板一次，包括计算值、查询与检索结果、抓取到的数据、摘要、清单、表格、代码、链接、图片和简短选择。描述要求模型拿不准时也照样调用，仅当本轮没有具体结果时才跳过——寒暄、确认、澄清问题、中间推理和进度更新。
 
 ```json
 {
@@ -90,7 +90,7 @@ kind: "package-reference"
 
 #### 模型看到什么
 
-模型看到生成的 [`show_result_panel` schema](../../../docs/tool-catalog.zh.md#deepseek-aidsh-pixies-panel)：可选的 `title`、有界的 `items` 数组，以及 image / text / choice / link 各类条目的专属字段。描述把是否调用面板的判断留给模型自己，同时也说明了 `[voice]...[/voice]` 标记：较长或细节繁多的文字回复附带一句供播报的核心结论，完整回复仍在对话页可读。
+模型看到生成的 [`show_result_panel` schema](../../../docs/tool-catalog.zh.md#deepseek-aidsh-pixies-panel)：可选的 `title`、有界的 `items` 数组，以及 image / text / choice / link 各类条目的专属字段。描述把结果面板设为产出结果轮次的默认呈现方式，禁止在文字回复中提到面板，同时也说明了 `[voice]...[/voice]` 标记：较长或细节繁多的文字回复附带一句供播报的核心结论，完整回复仍在对话页可读。
 
 #### Token 影响
 

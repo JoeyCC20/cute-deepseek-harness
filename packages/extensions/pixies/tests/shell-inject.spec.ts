@@ -25,6 +25,11 @@ describe('pixiesIndexInjections', () => {
     expect(PIXIES_SHELL_STYLE).toContain('body>*:not([data-pixies-shell]){display:none!important}')
   })
 
+  it('lets compact Markdown inherit the dark bubble text color', () => {
+    expect(PIXIES_SHELL_STYLE).toContain('[data-markdown-variant="compact"]')
+    expect(PIXIES_SHELL_STYLE).toContain('color:inherit')
+  })
+
   it('uses the shell-only flag and environment names', () => {
     expect(PIXIES_SHELL_FLAG).toBe('__DSH_PIXIES_SHELL__')
     expect(PIXIES_SHELL_ENV).toBe('DSH_PIXIES_SHELL')

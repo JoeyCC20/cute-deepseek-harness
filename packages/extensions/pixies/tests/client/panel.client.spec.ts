@@ -58,6 +58,7 @@ describe('panel-bridge wire helpers', () => {
       showResultPanel: (_interactive: boolean, _characters: number) => {},
       setPanelHeight: () => {},
       hideResultPanel: () => {},
+      setPanelHover: (_hovered: boolean) => {},
       getPanelSettings: async () => ({}),
       setPanelSettings: async () => ({}),
       openExternal: async () => true,

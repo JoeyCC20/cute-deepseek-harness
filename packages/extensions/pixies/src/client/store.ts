@@ -8,9 +8,17 @@
 import type { PixiesInteraction, PixiesMood, PixiesPresentation } from '../types.ts'
 
 /** Who produced one visible conversation entry. */
-export type PixiesMessageRole = 'user' | 'assistant' | 'system'
+export type PixiesMessageRole = 'user' | 'assistant' | 'system' | 'process'
 
-/** One conversation entry rendered by the expanded panel. */
+/** One step of a turn's work, rendered as its own collapsed transcript row. */
+export interface PixiesProcessEntry {
+  /** Reasoning, a tool call, or that tool's result. */
+  readonly kind: 'thinking' | 'tool-call' | 'tool-result'
+  /** The reasoning text, `name(arguments)`, or the returned text. */
+  readonly text: string
+}
+
+/** One conversation entry rendered by the expanded panel, oldest first. */
 export interface PixiesMessage {
   readonly id: string
   readonly role: PixiesMessageRole
@@ -19,6 +27,8 @@ export interface PixiesMessage {
   readonly at: number
   /** Replayed from a session log; these entries are never spoken aloud. */
   readonly historical?: boolean
+  /** The kind of work a process row records; absent on conversation entries. */
+  readonly processKind?: PixiesProcessEntry['kind']
 }
 
 /** The fields a caller supplies when publishing an entry. */
@@ -26,6 +36,8 @@ export interface PixiesMessageDraft {
   readonly role: PixiesMessageRole
   readonly text: string
   readonly mood?: PixiesMood
+  /** Kind of work for a process row; see PixiesMessage.processKind. */
+  readonly processKind?: PixiesProcessEntry['kind']
 }
 
 /** Cap the in-window history: a desktop companion can stay open for days. */
@@ -81,6 +93,8 @@ export interface PixiesStore {
   readonly appendThinking: (sessionId: string, delta: string) => void
   /** Close the round, replacing the live text with the durable reasoning when available. */
   readonly settleThinking: (sessionId: string, reasoning: string | undefined) => void
+  /** Append one ordered process row to the transcript as the step happens. */
+  readonly appendProcess: (sessionId: string, entry: PixiesProcessEntry) => void
   /** Reset every field and notify listeners. */
   readonly clear: () => void
   /** Replace the visible window with one session's replayed history in a single notification. */
@@ -96,6 +110,9 @@ export function createPixiesStore(): PixiesStore {
   let interaction: PixiesInteraction | undefined
   let pendingSession: string | undefined
   let thinking: PixiesThinking | undefined
+  // A turn streamed without durable reasoning owns one live text; consume it
+  // once so a multi-step turn does not repeat the whole stream as a new row.
+  let liveReasoningConsumed = false
   let messages: readonly PixiesMessage[] = []
   let sequence = 0
   const listeners = new Set<PixiesListener>()
@@ -115,8 +132,26 @@ export function createPixiesStore(): PixiesStore {
       text: draft.text,
       mood: draft.mood ?? 'neutral',
       at: Date.now(),
+      ...(draft.processKind === undefined ? {} : { processKind: draft.processKind }),
     }
     messages = [...messages, message].slice(-MAX_MESSAGES)
+  }
+  /**
+   * Write one work step straight into the transcript at the moment it happens.
+   * Every turn keeps its rows even when it never produces a visible reply, and
+   * their order is the event order rather than a block attached to the answer.
+   * @param sessionId - session that produced the step, used for a stable id.
+   * @param entry - the reasoning, call, or result to record.
+   * @returns false when the step is an adjacent duplicate of the last row.
+   */
+  const appendProcessRow = (sessionId: string, entry: PixiesProcessEntry): boolean => {
+    // The same call is logged both as an assistant content block and as a
+    // tool/call event; keep the first occurrence of an adjacent duplicate.
+    const last = messages[messages.length - 1]
+    if (last?.role === 'process' && last.processKind === entry.kind && last.text === entry.text) return false
+    append({ role: 'process', text: entry.text, processKind: entry.kind },
+      `process-${sessionId}-${String(sequence + 1)}`)
+    return true
   }
   return {
     getState: () => ({ latest, interaction, pendingSession, thinking, messages }),
@@ -135,9 +170,12 @@ export function createPixiesStore(): PixiesStore {
       emit()
     },
     appendMessage: (draft) => {
-      // A user prompt starts a new round, so the previous turn's reasoning is
-      // no longer the one the disclosure should show.
-      if (draft.role === 'user') thinking = undefined
+      // A user prompt starts a new round, so the previous turn's live stream
+      // is no longer the one the disclosure should show.
+      if (draft.role === 'user') {
+        thinking = undefined
+        liveReasoningConsumed = false
+      }
       append(draft, `local-${String(sequence + 1)}`)
       emit()
     },
@@ -145,6 +183,9 @@ export function createPixiesStore(): PixiesStore {
     beginThinking: (sessionId) => {
       const stale = thinking !== undefined && !thinking.active
       if (stale) thinking = undefined
+      // A new turn starts a fresh live stream. Work rows already written by a
+      // tool-only round stay in the transcript; nothing is discarded here.
+      liveReasoningConsumed = false
       if (pendingSession === sessionId && !stale) return
       pendingSession = sessionId
       emit()
@@ -168,21 +209,43 @@ export function createPixiesStore(): PixiesStore {
       emit()
     },
     settleThinking: (sessionId, reasoning) => {
+      // One assistant/message settles one reasoning step into its own ordered
+      // row, so every step of a tool-using turn stays in the transcript. A
+      // round streamed without durable reasoning still owns its live text:
+      // consume it once instead of repeating the whole stream per step.
+      const ownsStream = thinking === undefined || thinking.sessionId === sessionId
+      const live = ownsStream ? thinking?.text ?? '' : ''
+      const step = reasoning !== undefined && reasoning !== ''
+        ? reasoning
+        : live !== '' && !liveReasoningConsumed ? live : undefined
+      liveReasoningConsumed = true
+      const rowAdded = step !== undefined && step !== '' && ownsStream
+        ? appendProcessRow(sessionId, { kind: 'thinking', text: step })
+        : false
+      let streamChanged = false
       if (thinking === undefined) {
-        if (reasoning === undefined || reasoning === '') return
-        thinking = { sessionId, text: reasoning.slice(-MAX_THINKING_CHARS), active: false }
+        if (reasoning !== undefined && reasoning !== '') {
+          thinking = { sessionId, text: reasoning.slice(-MAX_THINKING_CHARS), active: false }
+          streamChanged = true
+        }
       } else if (thinking.sessionId === sessionId) {
         const text = reasoning === undefined || reasoning === '' ? thinking.text : reasoning
-        if (!thinking.active && text === thinking.text) return
-        thinking = { sessionId, text: text.slice(-MAX_THINKING_CHARS), active: false }
-      } else return
-      emit()
+        if (thinking.active || text !== thinking.text) {
+          thinking = { sessionId, text: text.slice(-MAX_THINKING_CHARS), active: false }
+          streamChanged = true
+        }
+      }
+      if (rowAdded || streamChanged) emit()
+    },
+    appendProcess: (sessionId, entry) => {
+      if (appendProcessRow(sessionId, entry)) emit()
     },
     clear: () => {
       latest = undefined
       interaction = undefined
       pendingSession = undefined
       thinking = undefined
+      liveReasoningConsumed = false
       messages = []
       emit()
     },
@@ -191,6 +254,9 @@ export function createPixiesStore(): PixiesStore {
       interaction = undefined
       pendingSession = undefined
       thinking = undefined
+      liveReasoningConsumed = false
+      // Replay is the same ordered transcript: work rows stay between the
+      // prompt and the reply instead of being folded onto the reply.
       messages = next.slice(-MAX_MESSAGES)
       emit()
     },

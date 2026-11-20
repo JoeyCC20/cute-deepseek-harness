@@ -24,6 +24,8 @@ export interface PixiesPanelBridge {
   readonly setPanelHeight: (height: number) => void
   /** Hide the window without destroying its renderer. */
   readonly hideResultPanel: () => void
+  /** Pause (`true`) or resume (`false`) the auto-hide countdown on pointer hover. */
+  readonly setPanelHover: (hovered: boolean) => void
   /** Read the persisted preferences. */
   readonly getPanelSettings: () => Promise<unknown>
   /** Persist preferences and receive the validated snapshot. */
@@ -103,6 +105,7 @@ export function resolvePixiesPanelBridge(): PixiesPanelBridge | undefined {
   if (typeof bridge.showResultPanel !== 'function'
     || typeof bridge.setPanelHeight !== 'function'
     || typeof bridge.hideResultPanel !== 'function'
+    || typeof bridge.setPanelHover !== 'function'
     || typeof bridge.getPanelSettings !== 'function'
     || typeof bridge.setPanelSettings !== 'function'
     || typeof bridge.openExternal !== 'function'

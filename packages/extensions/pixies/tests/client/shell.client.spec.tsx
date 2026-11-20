@@ -16,6 +16,7 @@ import type {
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createPixiesStore } from '../../src/client/store.ts'
+import { feedSessionEvent } from '../../src/client/feed.ts'
 import {
   cancelPixiesSession,
   createPixiesSessionSelection,
@@ -572,6 +573,35 @@ describe('followPixiesSession', () => {
 })
 
 describe('mountPixiesShell', () => {
+  it('renders assistant Markdown and delegates its links, while user text stays literal', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, calls, emitMode } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
+    act(() => { emitMode('expanded') })
+
+    act(() => {
+      store.appendMessage({ role: 'user', text: '**原样**的用户输入' })
+      store.speak({
+        id: 'session-1#md', sessionId: 'session-1', character: 'spider-man',
+        kind: 'speech', mood: 'neutral', text: '## 结论\n\n- 第一点\n- [文档](https://example.com)', seq: 2,
+      })
+    })
+    const bubble = container.querySelector('[data-testid="pixies-bubble"]')
+    expect(bubble?.querySelector('h2')?.textContent).toBe('结论')
+    expect(bubble?.querySelectorAll('li')).toHaveLength(2)
+    const link = bubble?.querySelector('a') as HTMLAnchorElement | null
+    expect(link?.textContent).toContain('文档')
+    act(() => { link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 })) })
+    expect(calls.some(call => call.startsWith('openExternal:'))).toBe(true)
+    expect(container.textContent).toContain('**原样**的用户输入')
+
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
   it('renders idle, stays live from the store, and unmounts on dispose', () => {
     const store = createPixiesStore()
     const container = document.createElement('div')
@@ -664,6 +694,7 @@ function fakeBridge(options: { readonly mode?: PixiesShellMode } = {}): {
     dragBy: () => {},
     hide: () => { iconCalls.push('hide') },
     dismissAutoIcon: () => { iconCalls.push('dismissAutoIcon') },
+    openExternal: (url) => { calls.push(`openExternal:${url}`) },
   }
   return {
     bridge,
@@ -849,12 +880,14 @@ describe('mountPixiesShell with the shell bridge (phase 3)', () => {
       .toBe('先看项目再查日志')
 
     act(() => { store.settleThinking('s', '先看项目，再查日志') })
-    expect(thinking().hasAttribute('data-streaming')).toBe(false)
-    expect(thinking().querySelector('[data-testid="pixies-thinking-body"]')?.textContent)
+    // Settled reasoning becomes a transcript row; the global stream hands over.
+    expect(container.querySelector('[data-testid="pixies-thinking"]')).toBeNull()
+    const row = container.querySelector('[data-testid="pixies-process-row"]')!
+    expect(row.getAttribute('data-kind')).toBe('thinking')
+    expect(row.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
+    fireEvent.click(row.querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(row.querySelector('[data-testid="pixies-process-body"]')?.textContent)
       .toBe('先看项目，再查日志')
-
-    fireEvent.click(toggle())
-    expect(thinking().querySelector('[data-testid="pixies-thinking-body"]')).toBeNull()
     act(() => { disposer?.() })
     container.remove()
   })
@@ -1759,6 +1792,12 @@ describe('voice-command shortcut and spoken replies', () => {
     })
   }
 
+  /** DOM order of work rows and assistant replies in the transcript. */
+  function transcriptOrder(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll('[data-testid="pixies-process-row"], [data-role="assistant"]'))
+      .map(node => node.getAttribute('data-role') === 'assistant' ? 'reply' : 'pixies-process-row')
+  }
+
   /** Mount in expanded mode with the recording bridge. */
   function expandedBench(): {
     store: ReturnType<typeof createPixiesStore>
@@ -1853,13 +1892,208 @@ describe('voice-command shortcut and spoken replies', () => {
       speak(store, 'session-1#1', '[voice]已修复登录问题[/voice]\n\n## 详情\n\n- 修改了 3 个文件\n- 跑了测试')
     })
     expect(calls.filter(call => call.startsWith('speakReply:'))).toEqual(['speakReply:已修复登录问题'])
-    // The full reply stays visible; only the control markers disappear.
-    expect(container.textContent).toContain('## 详情')
+    // The full reply stays visible as rendered Markdown; only the control markers disappear.
+    expect(container.textContent).toContain('详情')
     expect(container.textContent).toContain('修改了 3 个文件')
+    expect(container.textContent).not.toContain('[voice]')
+    expect(container.querySelector('[data-testid="pixies-bubble"] h2')?.textContent).toBe('详情')
+
+    act(() => { disposer?.() })
+    container.remove()
+  })
+
+  it('speaks only the marked takeaway while the transcript keeps reasoning and the full reply', () => {
+    const store = createPixiesStore()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const { bridge, calls, emitMode } = fakeBridge()
+    let disposer: (() => void) | undefined
+    act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
+    act(() => { emitMode('expanded') })
+
+    // A real turn carries settled reasoning plus a complete reply whose
+    // spoken takeaway is marked at the start.
+    act(() => { store.settleThinking('session-1', '先核对证据，再组织结论') })
+    act(() => {
+      speak(store, 'session-1#1',
+        '[voice]结论已确认[/voice]\n\n## 核对过程\n\n第一条证据\n\n第二条证据\n\n## 结论\n\n完整结论正文')
+    })
+
+    expect(calls.filter(call => call.startsWith('speakReply:'))).toEqual(['speakReply:结论已确认'])
+    // Nothing is dropped from the visible transcript: the takeaway sentence,
+    // the full structured reply, and the settled reasoning row all stay.
+    expect(container.textContent).toContain('结论已确认')
+    expect(container.textContent).toContain('核对过程')
+    expect(container.textContent).toContain('第二条证据')
+    expect(container.textContent).toContain('完整结论正文')
+    const row = container.querySelector('[data-testid="pixies-process-row"]')!
+    expect(row).not.toBeNull()
+    fireEvent.click(row.querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(row.querySelector('[data-testid="pixies-process-body"]')?.textContent)
+      .toBe('先核对证据，再组织结论')
     expect(container.textContent).not.toContain('[voice]')
 
     act(() => { disposer?.() })
     container.remove()
+  })
+
+  it('keeps every turn\'s process at its own position in the transcript', () => {
+    const b = expandedBench()
+    act(() => { b.store.settleThinking('s', '第一轮推理') })
+    act(() => { speak(b.store, 'session-1#1', '第一条回复') })
+    act(() => { b.store.beginThinking('s') })
+    act(() => { b.store.settleThinking('s', '第二轮推理') })
+    act(() => { speak(b.store, 'session-1#2', '第二条回复') })
+
+    const rows = b.container.querySelectorAll('[data-testid="pixies-process-row"]')
+    expect(rows).toHaveLength(2)
+    const toggle = (node: Element): Element => node.querySelector('[data-testid="pixies-process-toggle"]')!
+    fireEvent.click(toggle(rows[0]!))
+    expect(rows[0]!.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('第一轮推理')
+    // Rows are independent: expanding one never expands another.
+    expect(rows[1]!.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
+    fireEvent.click(toggle(rows[1]!))
+    expect(rows[1]!.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('第二轮推理')
+
+    expect(transcriptOrder(b.container))
+      .toEqual(['pixies-process-row', 'reply', 'pixies-process-row', 'reply'])
+    b.dispose()
+  })
+
+  it('renders replayed work rows with their persisted reasoning', () => {
+    const b = expandedBench()
+    act(() => {
+      b.store.hydrate([
+        { id: 'history-0', role: 'process', text: '历史推理', mood: 'neutral', at: 1, processKind: 'thinking' },
+        { id: 'history-1', role: 'assistant', text: '历史回复', mood: 'neutral', at: 2 },
+      ])
+    })
+    const row = b.container.querySelector('[data-testid="pixies-process-row"]')!
+    expect(row).not.toBeNull()
+    expect(row.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
+    fireEvent.click(row.querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(row.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('历史推理')
+    b.dispose()
+  })
+
+  it('renders each work row before the reply in execution order, collapsed by default', () => {
+    const b = expandedBench()
+    act(() => {
+      feedSessionEvent(b.store, 's', { type: 'turn/start', seq: 1, data: { turn: 1 } })
+      feedSessionEvent(b.store, 's', { type: 'assistant/message', seq: 2, data: {
+        turn: 1, step: 1, message: { content: [
+          { type: 'reasoning', text: '先算一下' },
+          { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{"command":"123 * 456"}' },
+        ] },
+      } })
+      feedSessionEvent(b.store, 's', { type: 'tool/result', seq: 3, data: { message: { content: [
+        { type: 'tool-result', content: [{ type: 'text', text: '56088\n' }] },
+      ] } } })
+      feedSessionEvent(b.store, 's', { type: 'assistant/message', seq: 4, data: {
+        turn: 1, step: 2, message: { content: [{ type: 'text', text: '结果是 56088' }] },
+      } })
+    })
+
+    expect(b.container.textContent).toContain('结果是 56088')
+    const rows = b.container.querySelectorAll('[data-testid="pixies-process-row"]')
+    expect(rows).toHaveLength(3)
+    expect(Array.from(rows).map(row => row.getAttribute('data-kind')))
+      .toEqual(['thinking', 'tool-call', 'tool-result'])
+    // Work precedes the answer rather than being folded underneath it.
+    expect(transcriptOrder(b.container)).toEqual([
+      'pixies-process-row', 'pixies-process-row', 'pixies-process-row', 'reply',
+    ])
+    for (const row of rows) {
+      const toggle = row.querySelector('[data-testid="pixies-process-toggle"]')!
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+      expect(toggle.getAttribute('aria-label')).toBe(defaultPixiesMessages.showProcess)
+      expect(row.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
+    }
+    expect(rows[0]!.textContent).toContain('先算一下')
+    expect(rows[1]!.textContent).toContain('bash({"command":"123 * 456"})')
+    expect(rows[2]!.textContent).toContain('56088')
+
+    fireEvent.click(rows[1]!.querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(rows[1]!.querySelector('[data-testid="pixies-process-body"]')?.textContent)
+      .toBe('bash({"command":"123 * 456"})')
+    expect(rows[0]!.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
+    b.dispose()
+  })
+
+  it('keeps a turn with no final reply recorded instead of dropping it', () => {
+    const b = expandedBench()
+    act(() => {
+      feedSessionEvent(b.store, 's', { type: 'turn/start', seq: 1, data: { turn: 1 } })
+      feedSessionEvent(b.store, 's', { type: 'assistant/message', seq: 2, data: {
+        turn: 1, step: 1, message: { content: [
+          { type: 'reasoning', text: '还在查' },
+          { type: 'tool-call', id: 'c1', name: 'bash', arguments: 'echo hi' },
+        ] },
+      } })
+      feedSessionEvent(b.store, 's', { type: 'tool/result', seq: 3, data: { message: { content: [
+        { type: 'tool-result', content: [{ type: 'text', text: 'hi\n' }] },
+      ] } } })
+      feedSessionEvent(b.store, 's', { type: 'turn/end', seq: 4, data: { turn: 1 } })
+    })
+    const rows = b.container.querySelectorAll('[data-testid="pixies-process-row"]')
+    expect(Array.from(rows).map(row => row.getAttribute('data-kind')))
+      .toEqual(['thinking', 'tool-call', 'tool-result'])
+    expect(b.container.querySelector('[data-role="assistant"]')).toBeNull()
+    b.dispose()
+  })
+
+  it('renders replayed tool work rows in their recorded order', () => {
+    const b = expandedBench()
+    act(() => {
+      b.store.hydrate([
+        { id: 'history-0', role: 'process', text: '历史推理', mood: 'neutral', at: 1, processKind: 'thinking' },
+        { id: 'history-1', role: 'process', text: 'bash(echo hi)', mood: 'neutral', at: 2, processKind: 'tool-call' },
+        { id: 'history-2', role: 'process', text: 'hi\n', mood: 'neutral', at: 3, processKind: 'tool-result' },
+        { id: 'history-3', role: 'assistant', text: '历史回复', mood: 'neutral', at: 4 },
+      ])
+    })
+    const rows = b.container.querySelectorAll('[data-testid="pixies-process-row"]')
+    expect(rows).toHaveLength(3)
+    expect(Array.from(rows).map(row => row.getAttribute('data-kind')))
+      .toEqual(['thinking', 'tool-call', 'tool-result'])
+    expect(transcriptOrder(b.container)).toEqual([
+      'pixies-process-row', 'pixies-process-row', 'pixies-process-row', 'reply',
+    ])
+    fireEvent.click(rows[1]!.querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(rows[1]!.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('bash(echo hi)')
+    b.dispose()
+  })
+
+  it('renders assistant replies as full-width documents while keeping user bubbles', () => {
+    const b = expandedBench()
+    act(() => {
+      b.store.appendMessage({ role: 'user', text: '帮我算一下' })
+      speak(b.store, 'session-1#1', '## 详情\n\n一段很长的回答')
+    })
+    const assistant = b.container.querySelector('[data-role="assistant"]') as HTMLElement
+    const user = b.container.querySelector('[data-role="user"]') as HTMLElement
+    expect(assistant.style.width).toBe('100%')
+    expect(assistant.style.background).toBe('')
+    expect(assistant.style.border).toBe('')
+    expect(assistant.style.borderRadius).toBe('')
+    // The Markdown primitive owns code/table scrolling; inherited wrapping
+    // would force long code onto broken lines instead of a scrollbar.
+    expect(assistant.style.overflowWrap).toBe('')
+    expect(assistant.style.whiteSpace).toBe('')
+    expect(user.style.background).toContain('linear-gradient')
+    expect(user.style.borderRadius).toBe('14px')
+    expect(b.container.querySelector('[data-testid="pixies-reply-header"]')?.textContent)
+      .toBe(defaultPixiesMessages.roleAssistant)
+    b.dispose()
+  })
+
+  it('keeps the live thinking bubble as a card while replies stay flat', () => {
+    const b = expandedBench()
+    act(() => { b.store.beginThinking('s') })
+    const live = b.container.querySelector('[data-testid="pixies-bubble"]') as HTMLElement
+    expect(live.style.background.replace(/\s+/g, '')).toContain('rgba(255,255,255,0.09)')
+    expect(live.style.borderRadius).toBe('14px')
+    b.dispose()
   })
 
   it('speaks a failed turn so a failure is not text-only', () => {

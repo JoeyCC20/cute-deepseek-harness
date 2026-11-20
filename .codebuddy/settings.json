@@ -1,15 +1,15 @@
 {
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"$CODEBUDDY_PROJECT_DIR/apps/pixies/local-scripts/start-pixies.sh\"",
-            "timeout": 180
-          }
-        ]
-      }
-    ]
-  }
+  // "hooks": {
+  //   "Stop": [
+  //     {
+  //       "hooks": [
+  //         {
+  //           "type": "command",
+  //           "command": "bash \"$CODEBUDDY_PROJECT_DIR/apps/pixies/local-scripts/start-pixies.sh\"",
+  //           "timeout": 180
+  //         }
+  //       ]
+  //     }
+  //   ]
+  // }
 }

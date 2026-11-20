@@ -81,6 +81,8 @@ export interface PixiesShellBridge {
   readonly hide?: () => void
   /** End a shortcut-shown icon after its round finishes (optional on older shells). */
   readonly dismissAutoIcon?: () => void
+  /** Open an http(s) link from rendered Markdown (optional on older shells). */
+  readonly openExternal?: (url: string) => Promise<unknown> | void
 }
 
 /** Whether an unknown bridge payload names a real shell mode. */
@@ -108,11 +110,11 @@ export function isPixiesVoiceCommandEvent(value: unknown): value is PixiesShellV
   return payload.mode === 'replace' || payload.mode === 'queue'
 }
 
-/** Newest non-user entry in the visible history (a reply or a turn failure). */
+/** Newest assistant reply or turn failure; work rows are never spoken aloud. */
 function lastReply(messages: readonly PixiesMessage[]): PixiesMessage | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
-    if (message !== undefined && message.role !== 'user') return message
+    if (message !== undefined && (message.role === 'assistant' || message.role === 'system')) return message
   }
   return undefined
 }

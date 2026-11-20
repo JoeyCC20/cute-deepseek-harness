@@ -199,4 +199,62 @@ describe('feedSessionEvent', () => {
     }))
     expect(store.getState().thinking).toEqual({ sessionId: 'session-1', text: '只有 live', active: false })
   })
+
+  it('writes a tool-using turn as ordered rows with the reply last', () => {
+    const store = createPixiesStore()
+    const assistant = (seq: number, content: readonly unknown[]): SessionEventLike =>
+      event('assistant/message', seq, { turn: 1, step: seq, message: { content } })
+    feedSessionEvent(store, 's', event('turn/start', 1, { turn: 1 }))
+    feedSessionEvent(store, 's', assistant(2, [
+      { type: 'reasoning', text: '先算一下' },
+      { type: 'tool-call', id: 'c1', name: 'bash', arguments: '{"command":"123 * 456"}' },
+    ]))
+    feedSessionEvent(store, 's', event('tool/call', 3, {
+      callId: 'c1', name: 'bash', arguments: '{"command":"123 * 456"}',
+    }))
+    feedSessionEvent(store, 's', event('tool/result', 4, { message: { content: [
+      { type: 'tool-result', content: [{ type: 'text', text: '56088\n' }] },
+    ] } }))
+    feedSessionEvent(store, 's', assistant(5, [
+      { type: 'reasoning', text: '核对无误' },
+      { type: 'text', text: '结果是 56088' },
+    ]))
+    expect(store.getState().messages.map(message => ({ kind: message.processKind, text: message.text })))
+      .toEqual([
+        { kind: 'thinking', text: '先算一下' },
+        { kind: 'tool-call', text: 'bash({"command":"123 * 456"})' },
+        { kind: 'tool-result', text: '56088\n' },
+        { kind: 'thinking', text: '核对无误' },
+        { kind: undefined, text: '结果是 56088' },
+      ])
+  })
+
+  it('keeps live reasoning as a row before the reply when the durable message has none', () => {
+    const store = createPixiesStore()
+    feedSessionEvent(store, 's', event('assistant/live-chunk', 1, {
+      chunk: { type: 'reasoning-delta', text: '先看证据再算结果' },
+    }))
+    feedSessionEvent(store, 's', event('assistant/message', 2, {
+      turn: 1, step: 1, message: { content: [{ type: 'text', text: '答案是 42' }] },
+    }))
+    expect(store.getState().messages.map(message => message.text))
+      .toEqual(['先看证据再算结果', '答案是 42'])
+  })
+
+  it('narrows malformed tool payloads', () => {
+    const store = createPixiesStore()
+    const payloads: unknown[] = [
+      null, 'not an object', {}, { name: '', arguments: '{}' },
+      { name: 42, arguments: '{}' }, { name: 'bash', arguments: { command: 'x' } },
+    ]
+    for (const data of payloads) feedSessionEvent(store, 's', event('tool/call', 1, data))
+    feedSessionEvent(store, 's', event('tool/result', 2, { message: { content: [
+      null, { type: 'tool-result', content: [null, { type: 'text', text: '' }] },
+    ] } }))
+    feedSessionEvent(store, 's', event('assistant/message', 3, {
+      turn: 1, step: 1, message: { content: [{ type: 'text', text: '答案' }] },
+    }))
+    expect(store.getState().messages.map(message => message.text))
+      .toEqual(['bash', '答案'])
+  })
 })

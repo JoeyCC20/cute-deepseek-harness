@@ -6,7 +6,10 @@
  * @module @deepseek-ai/dsh-pixies/client/conversation
  */
 
-import { createElement, useEffect, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactElement } from 'react'
+import {
+  MarkdownDelegateProvider, MarkdownText, type MarkdownLabels,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import {
@@ -18,7 +21,7 @@ import {
   PixiesVoiceButton,
 } from './character.tsx'
 import type { PixiesResolvedMessages } from './locale.ts'
-import type { PixiesClientState, PixiesMessage, PixiesMessageRole, PixiesThinking } from './store.ts'
+import type { PixiesClientState, PixiesMessage, PixiesMessageRole, PixiesProcessEntry, PixiesThinking } from './store.ts'
 import type { PixiesShellBridge, PixiesShellMode } from './shell.tsx'
 import { visibleReplyText } from './voice-summary.ts'
 import { usePixiesWindowDrag } from './window-drag.ts'
@@ -464,6 +467,52 @@ const THINKING_BODY: CSSProperties = {
   color: 'rgba(233,241,255,0.82)',
   fontFamily: 'inherit',
 }
+const PROCESS_BODY: CSSProperties = { ...THINKING_BODY, maxHeight: 320, borderTop: '1px solid rgba(255,255,255,0.08)' }
+const PROCESS_ROW: CSSProperties = {
+  alignSelf: 'flex-start', maxWidth: '92%', minWidth: 0, overflow: 'hidden',
+  borderRadius: 9, border: '1px solid rgba(120,170,255,0.18)',
+  background: 'rgba(120,170,255,0.05)',
+}
+const PROCESS_TOGGLE: CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 8, width: '100%', minWidth: 0,
+  padding: '6px 9px', border: 'none', background: 'transparent',
+  color: 'rgba(233,241,255,0.78)', fontFamily: 'inherit',
+  fontSize: 11.5, textAlign: 'left', cursor: 'pointer',
+}
+const PROCESS_KIND_INLINE: CSSProperties = { flexShrink: 0, fontSize: 10, opacity: 0.65 }
+const PROCESS_SUMMARY: CSSProperties = {
+  flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+}
+/** Assistant replies are documents: full width, with no card chrome. */
+const REPLY_DOCUMENT: CSSProperties = {
+  width: '100%',
+  minWidth: 0,
+  padding: '1px 0',
+  fontSize: 13,
+  lineHeight: 1.62,
+  color: '#f4f5fa',
+}
+const REPLY_HEADER: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  width: '100%',
+  paddingTop: 4,
+  fontSize: 10.5,
+  lineHeight: 1.2,
+  color: 'rgba(244,245,250,0.55)',
+}
+const REPLY_NAME: CSSProperties = { flexShrink: 0, letterSpacing: 0.3 }
+const REPLY_RULE: CSSProperties = { flex: 1, height: 1, background: 'rgba(255,255,255,0.10)' }
+/** Stack a reply and its collapsed process instead of squeezing them side by side. */
+const MESSAGE_COLUMN: CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'flex-start',
+  gap: 6,
+}
 function rowStyle(role: PixiesMessageRole): CSSProperties {
   return { display: 'flex', justifyContent: role === 'user' ? 'flex-end' : 'flex-start' }
 }
@@ -484,6 +533,11 @@ function bubbleStyle(role: PixiesMessageRole, mood: string): CSSProperties {
   if (mood === 'error' || mood === 'asking') {
     return { ...base, background: 'rgba(255,166,77,0.16)', border: '1px solid rgba(255,166,77,0.35)', color: '#ffd7a6', borderBottomLeftRadius: 4 }
   }
+  // A neutral assistant reply is the primary reading surface. Leaving it as a
+  // card squeezed long Markdown, tables, and code into 84% of the panel; the
+  // Markdown primitive owns code and table scrolling once no inherited
+  // `overflow-wrap: anywhere` or `white-space: pre-wrap` fights it.
+  if (role === 'assistant' && mood === 'neutral') return REPLY_DOCUMENT
   return {
     ...base,
     background: 'rgba(255,255,255,0.09)',
@@ -587,15 +641,55 @@ export function PixiesMiniView(props: PixiesConversationProps): ReactElement {
   )
 }
 
-/** One message row; only the newest assistant entry carries the smoke-test bubble marker. */
-function MessageRow({ message, marker }: { message: PixiesMessage; marker: boolean }): ReactElement {
+/**
+ * One message row; only the newest assistant entry carries the smoke-test
+ * bubble marker. Assistant Markdown is rendered; user and system entries keep
+ * their literal text so control feedback cannot be reinterpreted as markup.
+ * A conversation entry: work rows sit at their own position in the transcript,
+ * while assistant replies are full-width documents headed by their role.
+ */
+function MessageRow({ message, marker, labels, openExternalLink, copy }: {
+  message: PixiesMessage
+  marker: boolean
+  labels: MarkdownLabels | undefined
+  openExternalLink: (href: string) => void
+  copy: PixiesResolvedMessages
+}): ReactElement {
+  const [open, setOpen] = useState(false)
+  const toggle = (): void => { setOpen(!open) }
+  if (message.role === 'process') {
+    return createElement('div', { style: rowStyle('process') },
+      createElement(ProcessRow, {
+        kind: message.processKind ?? 'thinking',
+        text: message.text,
+        copy,
+        open,
+        onToggle: toggle,
+      }),
+    )
+  }
+  const text = visibleReplyText(message.text)
+  const bubble = createElement('div', {
+    'data-testid': marker ? 'pixies-bubble' : undefined,
+    'data-mood': marker ? message.mood : undefined,
+    'data-role': message.role,
+    role: marker ? 'status' : undefined,
+    style: bubbleStyle(message.role, message.mood),
+  }, message.role === 'assistant' && labels !== undefined
+    ? createElement(MarkdownDelegateProvider, { openExternalLink,
+      children: createElement(MarkdownText, { text, streaming: false, labels, variant: 'compact' }) })
+    : text)
+  if (message.role !== 'assistant') {
+    return createElement('div', { style: rowStyle(message.role) }, bubble)
+  }
   return createElement('div', { style: rowStyle(message.role) },
-    createElement('div', {
-      'data-testid': marker ? 'pixies-bubble' : undefined,
-      'data-mood': marker ? message.mood : undefined,
-      role: marker ? 'status' : undefined,
-      style: bubbleStyle(message.role, message.mood),
-    }, visibleReplyText(message.text)),
+    createElement('div', { style: MESSAGE_COLUMN },
+      createElement('div', { 'data-testid': 'pixies-reply-header', style: REPLY_HEADER },
+        createElement('span', { style: REPLY_NAME }, copy.roleAssistant),
+        createElement('span', { style: REPLY_RULE }),
+      ),
+      bubble,
+    ),
   )
 }
 
@@ -632,9 +726,10 @@ function sessionRows(list: SessionListState | undefined, now: number, hidden: Re
   return rows
 }
 
-function roleName(role: PixiesMessageRole, copy: PixiesResolvedMessages): string {
-  if (role === 'user') return copy.roleUser
-  if (role === 'assistant') return copy.roleAssistant
+function roleName(message: PixiesMessage, copy: PixiesResolvedMessages): string {
+  if (message.role === 'user') return copy.roleUser
+  if (message.role === 'assistant') return copy.roleAssistant
+  if (message.role === 'process') return processKindLabel(message.processKind ?? 'thinking', copy)
   return copy.roleSystem
 }
 
@@ -820,7 +915,7 @@ function HistoryPopup(props: HistoryPopupProps): ReactElement {
       key: message.id,
       'data-testid': 'pixies-context-row',
       style: CONTEXT_ROW,
-    }, `${roleName(message.role, props.copy)}: ${visibleReplyText(message.text)}`)),
+    }, `${roleName(message, props.copy)}: ${visibleReplyText(message.text)}`)),
   ),
   )
 }
@@ -858,6 +953,60 @@ function ThinkingDisclosure(props: ThinkingDisclosureProps): ReactElement {
   )
 }
 
+/** Label for one kind of step in a turn's work. */
+function processKindLabel(kind: PixiesProcessEntry['kind'], copy: PixiesResolvedMessages): string {
+  if (kind === 'thinking') return copy.processThinking
+  if (kind === 'tool-call') return copy.processToolCall
+  return copy.processToolResult
+}
+
+interface ProcessRowProps {
+  readonly kind: PixiesProcessEntry['kind']
+  readonly text: string
+  readonly copy: PixiesResolvedMessages
+  readonly open: boolean
+  readonly onToggle: () => void
+}
+
+/**
+ * One step of a turn at its position in the transcript, collapsed by default.
+ * The headline keeps a one-line preview so the execution order stays readable
+ * even when every row is closed.
+ */
+function ProcessRow(props: ProcessRowProps): ReactElement {
+  const summary = props.text.replace(/\s+/g, ' ').trim()
+  return createElement('div', {
+    'data-testid': 'pixies-process-row',
+    'data-kind': props.kind,
+    style: PROCESS_ROW,
+  },
+  createElement('button', {
+    type: 'button',
+    'data-testid': 'pixies-process-toggle',
+    'aria-expanded': props.open,
+    'aria-label': props.open ? props.copy.hideProcess : props.copy.showProcess,
+    style: PROCESS_TOGGLE,
+    onClick: props.onToggle,
+  },
+  createElement('span', { style: PROCESS_KIND_INLINE }, processKindLabel(props.kind, props.copy)),
+  createElement('span', { style: PROCESS_SUMMARY }, summary),
+  ),
+  props.open ? createElement('pre', {
+    'data-testid': 'pixies-process-body',
+    style: PROCESS_BODY,
+  }, props.text) : null,
+  )
+}
+
+/**
+ * Whether the live reasoning text is already a work row in the transcript, so
+ * the global streaming disclosure does not show the same text twice.
+ */
+function reasoningShownInTranscript(messages: readonly PixiesMessage[], text: string): boolean {
+  return messages.some(message => message.role === 'process' && message.processKind === 'thinking'
+    && (message.text === text || message.text.endsWith(text) || text.endsWith(message.text)))
+}
+
 /** Gear glyph for the settings entry; the accessible name comes from copy. */
 function settingsIcon(): ReactElement {
   return createElement('svg', {
@@ -887,6 +1036,13 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
   const lastAssistant = messages.reduce<number>((found, message, index) =>
     message.role === 'assistant' ? index : found, -1)
   const showWelcome = messages.length === 0 && live === undefined && props.state.interaction === undefined
+  const markdownLabels = useMemo<MarkdownLabels>(() => ({
+    code: { copyLabel: props.copy.markdownCopyLabel, copiedLabel: props.copy.markdownCopiedLabel },
+    footnotes: props.copy.markdownFootnotes,
+  }), [props.copy.markdownCopyLabel, props.copy.markdownCopiedLabel, props.copy.markdownFootnotes])
+  const openExternalLink = useCallback((href: string): void => {
+    if (props.bridge?.openExternal !== undefined) void props.bridge.openExternal(href)
+  }, [props.bridge])
 
   useEffect(() => { inputRef.current?.focus() }, [])
   useEffect(() => {
@@ -995,8 +1151,14 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
         key: message.id,
         message,
         marker: live === undefined && index === lastAssistant,
+        labels: markdownLabels,
+        openExternalLink,
+        copy: props.copy,
       })),
+      // The global disclosure only covers reasoning still streaming in, before
+      // it is settled into a work row; after that the transcript owns it.
       props.state.thinking !== undefined && props.state.thinking.text !== ''
+        && !reasoningShownInTranscript(messages, props.state.thinking.text)
         ? createElement(ThinkingDisclosure, {
           thinking: props.state.thinking,
           copy: props.copy,

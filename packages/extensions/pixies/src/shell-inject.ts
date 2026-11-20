@@ -21,6 +21,11 @@ export const PIXIES_SHELL_ENV = 'DSH_PIXIES_SHELL'
 export const PIXIES_SHELL_STYLE = [
   'html,body{background:transparent!important;margin:0!important;overflow:hidden!important}',
   'body>*:not([data-pixies-shell]){display:none!important}',
+  // MarkdownText defaults to design-token colors for light panels; inside the
+  // translucent dark conversation bubble it must inherit the bubble's color.
+  '[data-pixies-shell] [data-markdown-variant="compact"],'
+    + '[data-pixies-shell] [data-markdown-variant="compact"] a,'
+    + '[data-pixies-shell] [data-markdown-variant="compact"] li::marker{color:inherit}',
 ].join('')
 
 /**

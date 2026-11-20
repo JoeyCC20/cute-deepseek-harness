@@ -4,8 +4,10 @@ import {
   DEFAULT_PANEL_SETTINGS,
   MIN_PANEL_VISIBLE_MS,
   panelHideDelay,
+  panelHideRemaining,
   panelReadingMs,
   parsePanelSettings,
+  pointerInPanel,
 } from '../src/panel-settings.ts'
 
 describe('parsePanelSettings', () => {
@@ -66,5 +68,33 @@ describe('panelHideDelay', () => {
     expect(panelHideDelay({ enabled: false, autoHideMs: 1000 }, false, 500)).toBeNull()
     expect(panelHideDelay({ enabled: true, autoHideMs: null }, false, 500)).toBeNull()
     expect(panelHideDelay({ enabled: true, autoHideMs: 0 }, false, 500)).toBeNull()
+  })
+})
+
+describe('pointerInPanel', () => {
+  const bounds = { x: 100, y: 50, width: 320, height: 200 }
+
+  it('counts the rectangle edges and its interior as hovering', () => {
+    expect(pointerInPanel({ x: 100, y: 50 }, bounds)).toBe(true)
+    expect(pointerInPanel({ x: 420, y: 250 }, bounds)).toBe(true)
+    expect(pointerInPanel({ x: 260, y: 150 }, bounds)).toBe(true)
+  })
+
+  it('rejects points on any side outside the rectangle', () => {
+    expect(pointerInPanel({ x: 99, y: 150 }, bounds)).toBe(false)
+    expect(pointerInPanel({ x: 421, y: 150 }, bounds)).toBe(false)
+    expect(pointerInPanel({ x: 260, y: 49 }, bounds)).toBe(false)
+    expect(pointerInPanel({ x: 260, y: 251 }, bounds)).toBe(false)
+  })
+})
+
+describe('panelHideRemaining', () => {
+  it('keeps only the unelapsed part of a paused countdown', () => {
+    expect(panelHideRemaining(10_000, 3_000)).toBe(7_000)
+    expect(panelHideRemaining(10_000, 9_999.5)).toBe(1)
+  })
+
+  it('clamps an overdue countdown to zero', () => {
+    expect(panelHideRemaining(10_000, 12_000)).toBe(0)
   })
 })

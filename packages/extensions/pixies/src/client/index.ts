@@ -35,7 +35,10 @@ import {
 } from './shell.tsx'
 
 export { createPixiesStore } from './store.ts'
-export type { PixiesClientState, PixiesListener, PixiesStore } from './store.ts'
+export type {
+  PixiesClientState, PixiesListener, PixiesMessage, PixiesMessageDraft,
+  PixiesMessageRole, PixiesProcessEntry, PixiesStore, PixiesThinking,
+} from './store.ts'
 export { feedSessionEvent } from './feed.ts'
 export type { AssistantMessageEventData, SessionEventLike } from './feed.ts'
 export {

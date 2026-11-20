@@ -78,3 +78,38 @@ export function panelHideDelay(
   if (settings.autoHideMs === null || settings.autoHideMs <= 0) return null
   return Math.max(panelReadingMs(characters), settings.autoHideMs)
 }
+
+/** A point in Electron screen coordinates (also the top-left of a rectangle). */
+export interface PixiesScreenPoint {
+  readonly x: number
+  readonly y: number
+}
+
+/** A window rectangle in Electron screen coordinates. */
+export interface PixiesScreenBounds extends PixiesScreenPoint {
+  readonly width: number
+  readonly height: number
+}
+
+/**
+ * Whether the pointer currently rests inside the panel window. The shell uses
+ * this once when a new result appears, so a pointer already parked over the
+ * panel pauses the countdown without waiting for a fresh mouse-enter event.
+ * @param point - current cursor position in screen coordinates.
+ * @param bounds - the panel window's rectangle.
+ * @returns true when the point is inside the rectangle, edges included.
+ */
+export function pointerInPanel(point: PixiesScreenPoint, bounds: PixiesScreenBounds): boolean {
+  return point.x >= bounds.x && point.x <= bounds.x + bounds.width
+    && point.y >= bounds.y && point.y <= bounds.y + bounds.height
+}
+
+/**
+ * Time left on an auto-hide countdown when the pointer enters the panel.
+ * @param deadline - absolute timestamp at which the countdown would fire.
+ * @param now - current timestamp, in the same clock as the deadline.
+ * @returns the non-negative remainder in milliseconds.
+ */
+export function panelHideRemaining(deadline: number, now: number): number {
+  return Math.max(0, Math.ceil(deadline - now))
+}

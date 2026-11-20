@@ -127,6 +127,18 @@ export interface PixiesPanelMessages {
   readonly thinkingStreaming?: string
   /** Badge once the reasoning stream has settled. */
   readonly thinkingDone?: string
+  /** Collapsible turn-process block headline. */
+  readonly processTitle?: string
+  /** Accessible label of the button that expands the process block. */
+  readonly showProcess?: string
+  /** Accessible label of the button that collapses the process block. */
+  readonly hideProcess?: string
+  /** Kind label for a reasoning step in the process. */
+  readonly processThinking?: string
+  /** Kind label for a tool call in the process. */
+  readonly processToolCall?: string
+  /** Kind label for a tool result in the process. */
+  readonly processToolResult?: string
   /** Settings drawer headline and collapsed entry label. */
   readonly settings?: string
   /** Accessible label of the button that opens settings. */
@@ -281,6 +293,12 @@ export const defaultPixiesMessages: PixiesResolvedMessages = {
   hideThinking: '收起思考过程',
   thinkingStreaming: '生成中',
   thinkingDone: '已完成',
+  processTitle: '执行过程',
+  showProcess: '展开执行过程',
+  hideProcess: '收起执行过程',
+  processThinking: '思考',
+  processToolCall: '工具调用',
+  processToolResult: '工具结果',
   settings: '设置',
   settingsOpen: '打开设置',
   settingsClose: '关闭设置',

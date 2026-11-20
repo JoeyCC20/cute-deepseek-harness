@@ -29,7 +29,7 @@ Compose this plugin wherever the model should be able to show a result in Pixies
 
 ### When to call the tool
 
-The model calls `show_result_panel` when it has a concrete result worth seeing outside the transcript: an image, a computed or queried result, a set of links, or a short choice the user must make. It decides for itself whether a result benefits from a panel; short answers, intermediate reasoning, and progress updates do not.
+The model calls `show_result_panel` by default: most turns that answer a question or produce a result present it in the panel once before the final reply, including computed values, lookups, fetched data, summaries, lists, tables, code, links, images, and short choices. The description tells the model to call it even when unsure, and to skip it only for turns with no concrete result — greetings, acknowledgements, clarifying questions, intermediate reasoning, and progress updates.
 
 ```json
 {
@@ -90,7 +90,7 @@ The tool returns `{ "shown": true, "items": 4, "answers": [...] }`. A `choice` i
 
 #### What the model sees
 
-The model sees the generated [`show_result_panel` schema](../../../docs/tool-catalog.md#deepseek-aidsh-pixies-panel): an optional `title`, a bounded `items` array, and the `kind`-specific fields for image, text, choice, and link items. The description leaves the decision to call the tool to the model itself, and also documents the `[voice]...[/voice]` marker: a long or detailed text reply carries one short spoken takeaway, while the full reply stays readable in the transcript.
+The model sees the generated [`show_result_panel` schema](../../../docs/tool-catalog.md#deepseek-aidsh-pixies-panel): an optional `title`, a bounded `items` array, and the `kind`-specific fields for image, text, choice, and link items. The description makes the panel the default presentation for result-producing turns, forbids any mention of the panel in the text reply, and also documents the `[voice]...[/voice]` marker: a long or detailed text reply carries one short spoken takeaway, while the full reply stays readable in the transcript.
 
 #### Token effect
 

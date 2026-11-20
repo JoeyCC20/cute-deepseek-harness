@@ -217,4 +217,97 @@ describe('createPixiesStore', () => {
     expect(store.getState().thinking?.text).toBe('旧会话')
     expect(store.getState().thinking?.sessionId).toBe('a')
   })
+
+  it('writes every settled reasoning step as its own ordered row', () => {
+    const store = createPixiesStore()
+    store.beginThinking('s')
+    store.settleThinking('s', '先查证据')
+    store.settleThinking('s', '再算结果')
+    store.settleThinking('s', undefined) // the speaking message carries no reasoning
+    store.speak(presentation('答案'))
+    expect(store.getState().messages.map(message => ({ role: message.role, kind: message.processKind, text: message.text })))
+      .toEqual([
+        { role: 'process', kind: 'thinking', text: '先查证据' },
+        { role: 'process', kind: 'thinking', text: '再算结果' },
+        { role: 'assistant', kind: undefined, text: '答案' },
+      ])
+  })
+
+  it('keeps every turn separate instead of inheriting the previous one', () => {
+    const store = createPixiesStore()
+    store.settleThinking('s', '第一轮推理')
+    store.speak(presentation('第一轮'))
+    store.beginThinking('s')
+    store.speak({ ...presentation('第二轮'), id: 'session-1#2', seq: 2 })
+    const messages = store.getState().messages
+    expect(messages).toHaveLength(3)
+    expect(messages[0]?.role).toBe('process')
+    expect(messages[1]?.text).toBe('第一轮')
+    expect(messages[2]?.text).toBe('第二轮')
+  })
+
+  it('keeps a tool-only round with no reply instead of discarding it next turn', () => {
+    const store = createPixiesStore()
+    store.settleThinking('s', '回放推理')
+    store.speak(presentation('历史回复'))
+    const history = store.getState().messages
+    store.hydrate(history.map(message => ({ ...message, historical: true })))
+    expect(store.getState().messages[0]?.text).toBe('回放推理')
+
+    store.beginThinking('s')
+    store.settleThinking('s', '无回复的推理')
+    store.appendProcess('s', { kind: 'tool-call', text: 'bash(echo hi)' })
+    store.endThinking('s')
+    store.beginThinking('s') // next turn starts; the tool-only round must stay
+    store.speak({ ...presentation('新回复'), id: 'session-1#3', seq: 3 })
+    expect(store.getState().messages.map(message => message.text))
+      .toEqual(['回放推理', '历史回复', '无回复的推理', 'bash(echo hi)', '新回复'])
+  })
+
+  it('settles a live-only reasoning stream into one row', () => {
+    const store = createPixiesStore()
+    store.beginThinking('session-1')
+    store.appendThinking('session-1', '先看证据')
+    store.appendThinking('session-1', '再算结果')
+    store.settleThinking('session-1', undefined) // no durable reasoning block
+    store.speak(presentation('答案是 42'))
+    expect(store.getState().messages.map(message => message.text))
+      .toEqual(['先看证据再算结果', '答案是 42'])
+    expect(store.getState().messages[0]?.processKind).toBe('thinking')
+  })
+
+  it('writes tool work in event order before the reply and drops adjacent duplicates', () => {
+    const store = createPixiesStore()
+    store.beginThinking('session-1')
+    store.settleThinking('session-1', '需要算一下')
+    store.appendProcess('session-1', { kind: 'tool-call', text: 'bash({"command":"123 * 456"})' })
+    // The same call is emitted as both a content block and a tool/call event.
+    store.appendProcess('session-1', { kind: 'tool-call', text: 'bash({"command":"123 * 456"})' })
+    store.appendProcess('session-1', { kind: 'tool-result', text: '56088\n' })
+    store.settleThinking('session-1', '核对无误')
+    store.speak(presentation('结果是 56088'))
+    expect(store.getState().messages.map(message => ({ kind: message.processKind, text: message.text })))
+      .toEqual([
+        { kind: 'thinking', text: '需要算一下' },
+        { kind: 'tool-call', text: 'bash({"command":"123 * 456"})' },
+        { kind: 'tool-result', text: '56088\n' },
+        { kind: 'thinking', text: '核对无误' },
+        { kind: undefined, text: '结果是 56088' },
+      ])
+  })
+
+  it('keeps the ordered transcript across hydrate and a following turn', () => {
+    const store = createPixiesStore()
+    store.appendProcess('session-1', { kind: 'tool-call', text: 'bash(echo hi)' })
+    store.speak(presentation('第一轮'))
+    const history = store.getState().messages
+    store.hydrate(history.map(message => ({ ...message, historical: true })))
+    expect(store.getState().messages.map(message => message.text))
+      .toEqual(['bash(echo hi)', '第一轮'])
+
+    store.beginThinking('session-1')
+    store.speak({ ...presentation('第二轮'), id: 'session-1#2', seq: 2 })
+    expect(store.getState().messages.at(-1)?.text).toBe('第二轮')
+    expect(store.getState().messages.at(-1)?.role).toBe('assistant')
+  })
 })

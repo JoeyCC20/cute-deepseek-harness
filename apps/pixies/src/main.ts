@@ -45,7 +45,9 @@ import {
   DEFAULT_PANEL_SETTINGS,
   PANEL_SETTINGS_FILE,
   panelHideDelay,
+  panelHideRemaining,
   parsePanelSettings,
+  pointerInPanel,
   type PixiesPanelSettings,
 } from './panel-settings.ts'
 import { composePixiesDeployStamp, readPixiesBuildStamp } from './project-stamp.ts'
@@ -600,6 +602,9 @@ async function main(): Promise<void> {
   let settingsWindow: Electron.BrowserWindow | undefined
   let panelWindow: Electron.BrowserWindow | undefined
   let panelHideTimer: ReturnType<typeof setTimeout> | undefined
+  let panelHideDeadline = 0
+  let panelHideRemainingMs: number | null = null
+  let panelHovered = false
   let panelHeight = PANEL_MIN_HEIGHT
   let panelSettings = loadPanelSettings()
   // The Remote Event WebSocket bypasses `protocol.handle`, so it needs its own
@@ -663,7 +668,35 @@ async function main(): Promise<void> {
   /** Hiding keeps the renderer and its answerer alive for the next result. */
   const hidePanel = (): void => {
     clearPanelHideTimer()
+    panelHideRemainingMs = null
+    panelHovered = false
     if (panelWindow !== undefined && !panelWindow.isDestroyed()) panelWindow.hide()
+  }
+
+  /** Whether the pointer is already parked over the panel when a result shows. */
+  const pointerOverPanel = (): boolean => {
+    if (panelWindow === undefined || panelWindow.isDestroyed()) return false
+    return pointerInPanel(screen.getCursorScreenPoint(), panelWindow.getBounds())
+  }
+
+  /** Freeze the countdown while the pointer rests on the panel. */
+  const pausePanelHide = (): void => {
+    if (panelHovered) return
+    panelHovered = true
+    if (panelHideTimer === undefined) return
+    panelHideRemainingMs = panelHideRemaining(panelHideDeadline, Date.now())
+    clearPanelHideTimer()
+  }
+
+  /** Continue the countdown from the paused remainder once the pointer leaves. */
+  const resumePanelHide = (): void => {
+    if (!panelHovered) return
+    panelHovered = false
+    if (panelHideRemainingMs === null) return
+    const remaining = panelHideRemainingMs
+    panelHideRemainingMs = null
+    panelHideDeadline = Date.now() + remaining
+    panelHideTimer = setTimeout(() => { hidePanel() }, remaining)
   }
 
   /**
@@ -736,10 +769,21 @@ async function main(): Promise<void> {
     if (!panelSettings.enabled) return
     if (panelWindow === undefined || panelWindow.isDestroyed()) return
     clearPanelHideTimer()
+    panelHideRemainingMs = null
     positionPanel()
     panelWindow.showInactive()
     const delay = panelHideDelay(panelSettings, interactive, characters)
-    if (delay !== null) panelHideTimer = setTimeout(() => { hidePanel() }, delay)
+    if (delay === null) {
+      panelHovered = false
+      return
+    }
+    panelHovered = pointerOverPanel()
+    panelHideDeadline = Date.now() + delay
+    if (panelHovered) {
+      panelHideRemainingMs = delay
+      return
+    }
+    panelHideTimer = setTimeout(() => { hidePanel() }, delay)
   }
 
   ipcMain.handle('pixies:panel:show', (_event, interactive: unknown, characters: unknown) => {
@@ -752,6 +796,10 @@ async function main(): Promise<void> {
     resizePanel(height)
   })
   ipcMain.handle('pixies:panel:hide', () => { hidePanel() })
+  ipcMain.handle('pixies:panel:hover', (_event, hovered: unknown) => {
+    if (hovered === true) pausePanelHide()
+    else resumePanelHide()
+  })
   ipcMain.handle('pixies:panel:settings:get', () => panelSettings)
   ipcMain.handle('pixies:panel:settings:set', (_event, value: unknown) => {
     panelSettings = parsePanelSettings(value)

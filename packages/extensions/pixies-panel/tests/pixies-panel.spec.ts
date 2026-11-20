@@ -158,11 +158,33 @@ describe('show_result_panel tool', () => {
     expect(properties).toHaveProperty('url')
   })
 
-  it('tells the model how to mark a spoken takeaway', async () => {
+  it('tells the model to mark only the speech takeaway and keep the full reply', async () => {
     const ctx = await setup()
     const schema = ctx.tools.schemas().find(tool => tool.name === 'show_result_panel')
     expect(schema?.description).toContain('[voice]...[/voice]')
-    expect(schema?.description).toContain('without a marker the whole reply is spoken')
+    expect(schema?.description).toContain('only the marked takeaway is spoken')
+    expect(schema?.description).toContain('Write the COMPLETE reply in the text')
+    expect(schema?.description).toContain('never replaces the reply')
+  })
+
+  it('makes the panel the default presentation for result-producing turns', async () => {
+    const ctx = await setup()
+    const schema = ctx.tools.schemas().find(tool => tool.name === 'show_result_panel')
+    expect(schema?.description).toContain('Use this tool by default')
+    expect(schema?.description).toContain('most turns that answer a question or produce any result')
+    expect(schema?.description).toContain('If you are unsure whether a result belongs in a panel, call it anyway')
+    expect(schema?.description).toContain('Skip it only when the turn has no concrete result')
+    expect(schema?.description).not.toContain('do NOT call it for short plain-text answers')
+  })
+
+  it('forbids replies that announce the result panel', async () => {
+    const ctx = await setup()
+    const schema = ctx.tools.schemas().find(tool => tool.name === 'show_result_panel')
+    expect(schema?.description).toContain('never mention the panel in your text reply')
+    expect(schema?.description).toContain('write your reply as if the panel did not exist')
+    expect(schema?.description).toContain('"已放到结果面板"')
+    expect(schema?.description).toContain('"已在结果面板中展示"')
+    expect(schema?.description).toContain('"详见结果面板"')
   })
 
   it('sends a display-only question for a non-interactive panel and returns once acknowledged', async () => {

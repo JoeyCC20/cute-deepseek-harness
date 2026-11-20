@@ -74,6 +74,8 @@ contextBridge.exposeInMainWorld('dshPixies', {
   },
   /** Hide the panel from its close button; the next result wakes it again. */
   hideResultPanel: (): void => { void ipcRenderer.invoke('pixies:panel:hide') },
+  /** Pause or resume auto-hide while the pointer rests on the panel. */
+  setPanelHover: (hovered: boolean): void => { void ipcRenderer.invoke('pixies:panel:hover', hovered) },
   /** Read the current result-panel preferences. */
   getPanelSettings: (): Promise<unknown> => ipcRenderer.invoke('pixies:panel:settings:get'),
   /** Persist result-panel preferences and return the validated snapshot. */
