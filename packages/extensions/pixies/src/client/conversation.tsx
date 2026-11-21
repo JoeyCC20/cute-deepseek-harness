@@ -21,7 +21,7 @@ import {
   PixiesVoiceButton,
 } from './character.tsx'
 import type { PixiesResolvedMessages } from './locale.ts'
-import type { PixiesClientState, PixiesMessage, PixiesMessageRole, PixiesProcessEntry, PixiesThinking } from './store.ts'
+import type { PixiesClientState, PixiesMessage, PixiesMessageRole, PixiesProcessEntry } from './store.ts'
 import type { PixiesShellBridge, PixiesShellMode } from './shell.tsx'
 import { visibleReplyText } from './voice-summary.ts'
 import { usePixiesWindowDrag } from './window-drag.ts'
@@ -431,14 +431,6 @@ const CONTEXT_ROW: CSSProperties = {
   textOverflow: 'ellipsis',
   whiteSpace: 'nowrap',
 }
-const THINKING: CSSProperties = {
-  alignSelf: 'flex-start',
-  maxWidth: '88%',
-  borderRadius: 12,
-  border: '1px solid rgba(90,169,255,0.28)',
-  background: 'rgba(90,169,255,0.08)',
-  overflow: 'hidden',
-}
 const THINKING_TOGGLE: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
@@ -467,11 +459,23 @@ const THINKING_BODY: CSSProperties = {
   color: 'rgba(233,241,255,0.82)',
   fontFamily: 'inherit',
 }
-const PROCESS_BODY: CSSProperties = { ...THINKING_BODY, maxHeight: 320, borderTop: '1px solid rgba(255,255,255,0.08)' }
+const PROCESS_BODY: CSSProperties = {
+  ...THINKING_BODY, maxHeight: 320, paddingTop: 8,
+  borderTop: '1px solid rgba(255,255,255,0.08)',
+}
+const WORK_GROUP: CSSProperties = {
+  alignSelf: 'flex-start', width: '92%', minWidth: 0, overflow: 'hidden',
+  borderRadius: 11, border: '1px solid rgba(90,169,255,0.22)',
+  background: 'rgba(90,169,255,0.06)',
+}
+const WORK_ITEMS: CSSProperties = {
+  display: 'flex', flexDirection: 'column', gap: 5, padding: '0 9px 9px',
+}
+const WORK_COUNT: CSSProperties = { flexShrink: 0, fontSize: 10, opacity: 0.6 }
 const PROCESS_ROW: CSSProperties = {
-  alignSelf: 'flex-start', maxWidth: '92%', minWidth: 0, overflow: 'hidden',
-  borderRadius: 9, border: '1px solid rgba(120,170,255,0.18)',
-  background: 'rgba(120,170,255,0.05)',
+  alignSelf: 'stretch', width: '100%', minWidth: 0, overflow: 'hidden',
+  borderRadius: 8, border: '1px solid rgba(120,170,255,0.16)',
+  background: 'rgba(120,170,255,0.04)',
 }
 const PROCESS_TOGGLE: CSSProperties = {
   display: 'flex', alignItems: 'center', gap: 8, width: '100%', minWidth: 0,
@@ -546,7 +550,7 @@ function bubbleStyle(role: PixiesMessageRole, mood: string): CSSProperties {
   }
 }
 
-/** The live status bubble: failure, listening draft, or thinking. */
+/** The live status bubble: a failure or a listening draft; thinking lives in the work group. */
 interface LiveBubble {
   readonly text: string
   readonly mood: 'asking' | 'thinking' | 'error'
@@ -563,7 +567,7 @@ function isThinking(props: PixiesConversationProps): boolean {
 function liveBubble(props: PixiesConversationProps): LiveBubble | undefined {
   if (props.error !== '') return { text: props.error, mood: 'error' }
   if (props.listening) return { text: props.partial !== '' ? props.partial : props.copy.listening, mood: 'asking' }
-  if (isThinking(props)) return { text: props.copy.thinking, mood: 'thinking' }
+  // A turn in progress reports its state in the work group, never as its own bubble.
   return undefined
 }
 
@@ -645,8 +649,8 @@ export function PixiesMiniView(props: PixiesConversationProps): ReactElement {
  * One message row; only the newest assistant entry carries the smoke-test
  * bubble marker. Assistant Markdown is rendered; user and system entries keep
  * their literal text so control feedback cannot be reinterpreted as markup.
- * A conversation entry: work rows sit at their own position in the transcript,
- * while assistant replies are full-width documents headed by their role.
+ * A conversation entry: assistant replies are full-width documents headed by
+ * their role; consecutive work rows are grouped by the transcript renderer.
  */
 function MessageRow({ message, marker, labels, openExternalLink, copy }: {
   message: PixiesMessage
@@ -655,19 +659,6 @@ function MessageRow({ message, marker, labels, openExternalLink, copy }: {
   openExternalLink: (href: string) => void
   copy: PixiesResolvedMessages
 }): ReactElement {
-  const [open, setOpen] = useState(false)
-  const toggle = (): void => { setOpen(!open) }
-  if (message.role === 'process') {
-    return createElement('div', { style: rowStyle('process') },
-      createElement(ProcessRow, {
-        kind: message.processKind ?? 'thinking',
-        text: message.text,
-        copy,
-        open,
-        onToggle: toggle,
-      }),
-    )
-  }
   const text = visibleReplyText(message.text)
   const bubble = createElement('div', {
     'data-testid': marker ? 'pixies-bubble' : undefined,
@@ -920,39 +911,6 @@ function HistoryPopup(props: HistoryPopupProps): ReactElement {
   )
 }
 
-interface ThinkingDisclosureProps {
-  readonly thinking: PixiesThinking
-  readonly copy: PixiesResolvedMessages
-  readonly open: boolean
-  readonly onToggle: () => void
-}
-
-/** One collapsed-by-default reasoning block; the text keeps streaming while open. */
-function ThinkingDisclosure(props: ThinkingDisclosureProps): ReactElement {
-  return createElement('div', {
-    'data-testid': 'pixies-thinking',
-    'data-streaming': props.thinking.active ? '' : undefined,
-    style: THINKING,
-  },
-  createElement('button', {
-    type: 'button',
-    'data-testid': 'pixies-thinking-toggle',
-    'aria-expanded': props.open,
-    'aria-label': props.open ? props.copy.hideThinking : props.copy.showThinking,
-    style: THINKING_TOGGLE,
-    onClick: props.onToggle,
-  },
-  createElement('span', null, props.copy.thinkingProcess),
-  createElement('span', { style: THINKING_STATE },
-    props.thinking.active ? props.copy.thinkingStreaming : props.copy.thinkingDone),
-  ),
-  props.open ? createElement('pre', {
-    'data-testid': 'pixies-thinking-body',
-    style: THINKING_BODY,
-  }, props.thinking.text) : null,
-  )
-}
-
 /** Label for one kind of step in a turn's work. */
 function processKindLabel(kind: PixiesProcessEntry['kind'], copy: PixiesResolvedMessages): string {
   if (kind === 'thinking') return copy.processThinking
@@ -964,16 +922,11 @@ interface ProcessRowProps {
   readonly kind: PixiesProcessEntry['kind']
   readonly text: string
   readonly copy: PixiesResolvedMessages
-  readonly open: boolean
-  readonly onToggle: () => void
 }
 
-/**
- * One step of a turn at its position in the transcript, collapsed by default.
- * The headline keeps a one-line preview so the execution order stays readable
- * even when every row is closed.
- */
+/** One work step: a one-line preview that opens its full detail on click. */
 function ProcessRow(props: ProcessRowProps): ReactElement {
+  const [open, setOpen] = useState(false)
   const summary = props.text.replace(/\s+/g, ' ').trim()
   return createElement('div', {
     'data-testid': 'pixies-process-row',
@@ -983,24 +936,134 @@ function ProcessRow(props: ProcessRowProps): ReactElement {
   createElement('button', {
     type: 'button',
     'data-testid': 'pixies-process-toggle',
-    'aria-expanded': props.open,
-    'aria-label': props.open ? props.copy.hideProcess : props.copy.showProcess,
+    'aria-expanded': open,
+    'aria-label': open ? props.copy.hideProcess : props.copy.showProcess,
     style: PROCESS_TOGGLE,
-    onClick: props.onToggle,
+    onClick: () => { setOpen(!open) },
   },
   createElement('span', { style: PROCESS_KIND_INLINE }, processKindLabel(props.kind, props.copy)),
   createElement('span', { style: PROCESS_SUMMARY }, summary),
   ),
-  props.open ? createElement('pre', {
+  open ? createElement('pre', {
     'data-testid': 'pixies-process-body',
     style: PROCESS_BODY,
   }, props.text) : null,
   )
 }
 
+interface WorkGroupProps {
+  readonly rows: readonly PixiesMessage[]
+  /** Live reasoning text that has not settled into its own row yet. */
+  readonly streaming: string | undefined
+  /** Whether this turn is still running. */
+  readonly active: boolean
+  readonly copy: PixiesResolvedMessages
+}
+
+/** One item in the work group: a settled row or the live reasoning stream. */
+interface WorkItem {
+  readonly id: string
+  readonly kind: PixiesProcessEntry['kind']
+  readonly text: string
+}
+
+/**
+ * One turn's work, collected in place. The outer disclosure is closed by
+ * default; opening it lists the ordered rows, and each row opens its detail.
+ * While the turn runs its heading reads "thinking"; once a result exists it
+ * becomes the settled "thinking process" label.
+ */
+function WorkGroup(props: WorkGroupProps): ReactElement {
+  const [open, setOpen] = useState(false)
+  const items: WorkItem[] = props.rows.map(row => ({
+    id: row.id,
+    kind: row.processKind ?? 'thinking',
+    text: row.text,
+  }))
+  if (props.streaming !== undefined && props.streaming !== '') {
+    items.push({ id: 'streaming', kind: 'thinking', text: props.streaming })
+  }
+  return createElement('div', {
+    'data-testid': 'pixies-work-group',
+    'data-active': props.active ? '' : undefined,
+    style: WORK_GROUP,
+  },
+  createElement('button', {
+    type: 'button',
+    'data-testid': 'pixies-work-toggle',
+    'aria-expanded': open,
+    'aria-label': open ? props.copy.hideProcess : props.copy.showProcess,
+    style: THINKING_TOGGLE,
+    onClick: () => { setOpen(!open) },
+  },
+  createElement('span', { 'data-testid': 'pixies-work-title' },
+    props.active ? props.copy.thinking : props.copy.thinkingProcess),
+  createElement('span', { style: WORK_COUNT }, `· ${String(items.length)}`),
+  createElement('span', { style: THINKING_STATE },
+    props.active ? props.copy.thinkingStreaming : props.copy.thinkingDone),
+  ),
+  open ? createElement('div', { 'data-testid': 'pixies-work-items', style: WORK_ITEMS },
+    items.map(item => createElement(ProcessRow, {
+      key: item.id,
+      kind: item.kind,
+      text: item.text,
+      copy: props.copy,
+    })),
+  ) : null,
+  )
+}
+
+/** A message row, or one turn's work group (possibly still in progress). */
+type TranscriptBlock =
+  | { kind: 'message'; message: PixiesMessage; index: number }
+  | {
+    kind: 'work'
+    rows: PixiesMessage[]
+    index: number
+    active: boolean
+    streaming: string | undefined
+  }
+
+/**
+ * Group consecutive work rows without moving them: the group stays where the
+ * steps happened, before the reply that ended the turn. An in-progress turn
+ * folds its live reasoning into the current group, or opens a new one at the
+ * tail when it has not written any row yet.
+ */
+function transcriptBlocks(
+  messages: readonly PixiesMessage[],
+  active: boolean,
+  streaming: string | undefined,
+): readonly TranscriptBlock[] {
+  const blocks: TranscriptBlock[] = []
+  for (const [index, message] of messages.entries()) {
+    const last = blocks[blocks.length - 1]
+    if (message.role === 'process') {
+      if (last?.kind === 'work') last.rows.push(message)
+      else blocks.push({ kind: 'work', rows: [message], index, active: false, streaming: undefined })
+      continue
+    }
+    blocks.push({ kind: 'message', message, index })
+  }
+  if (!active && streaming === undefined) return blocks
+  const last = blocks[blocks.length - 1]
+  if (last?.kind === 'work') {
+    last.active = active
+    last.streaming = streaming
+    return blocks
+  }
+  // A reply already closes its turn; a late turn marker must not open an empty
+  // in-progress group after the answer.
+  if (last?.kind === 'message' && (last.message.role === 'assistant' || last.message.role === 'system')) {
+    return blocks
+  }
+  blocks.push({ kind: 'work', rows: [], index: messages.length, active, streaming })
+  return blocks
+}
+
 /**
  * Whether the live reasoning text is already a work row in the transcript, so
- * the global streaming disclosure does not show the same text twice.
+ * the in-progress group does not list the same text twice.
  */
 function reasoningShownInTranscript(messages: readonly PixiesMessage[], text: string): boolean {
   return messages.some(message => message.role === 'process' && message.processKind === 'thinking'
@@ -1029,13 +1092,23 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
   const listRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
-  const [thinkingOpen, setThinkingOpen] = useState(false)
   const live = liveBubble(props)
   const status = statusOf(props)
   const messages = props.state.messages
   const lastAssistant = messages.reduce<number>((found, message, index) =>
     message.role === 'assistant' ? index : found, -1)
-  const showWelcome = messages.length === 0 && live === undefined && props.state.interaction === undefined
+  const liveText = props.state.thinking?.text ?? ''
+  const streaming = liveText !== '' && !reasoningShownInTranscript(messages, liveText)
+    ? liveText : undefined
+  // Settled reasoning is a result: the heading switches to "thinking process"
+  // even when the host's turn/end marker has not arrived yet. A stream still
+  // arriving counts as in progress before turn/start lands.
+  const thinkingSettled = props.state.thinking !== undefined && !props.state.thinking.active
+  const active = !thinkingSettled
+    && (isThinking(props) || (props.state.thinking?.active ?? false) || streaming !== undefined)
+  const blocks = transcriptBlocks(messages, active, streaming)
+  const showWelcome = messages.length === 0 && live === undefined
+    && props.state.interaction === undefined && !active && streaming === undefined
   const markdownLabels = useMemo<MarkdownLabels>(() => ({
     code: { copyLabel: props.copy.markdownCopyLabel, copiedLabel: props.copy.markdownCopiedLabel },
     footnotes: props.copy.markdownFootnotes,
@@ -1048,7 +1121,7 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
   useEffect(() => {
     const node = listRef.current
     if (node !== null) node.scrollTop = node.scrollHeight
-  }, [messages.length, live?.text, thinkingOpen ? props.state.thinking?.text : undefined])
+  }, [messages.length, live?.text, streaming])
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent): void => {
       if (event.key !== 'Escape') return
@@ -1147,24 +1220,24 @@ export function PixiesExpandedView(props: PixiesConversationProps): ReactElement
         props.state.interaction.kind === 'approval' ? props.copy.approval : props.copy.question,
         props.state.interaction.summary === '' ? '' : `：${props.state.interaction.summary}`,
       ) : null,
-      ...messages.map((message, index) => createElement(MessageRow, {
-        key: message.id,
-        message,
-        marker: live === undefined && index === lastAssistant,
-        labels: markdownLabels,
-        openExternalLink,
-        copy: props.copy,
-      })),
-      // The global disclosure only covers reasoning still streaming in, before
-      // it is settled into a work row; after that the transcript owns it.
-      props.state.thinking !== undefined && props.state.thinking.text !== ''
-        && !reasoningShownInTranscript(messages, props.state.thinking.text)
-        ? createElement(ThinkingDisclosure, {
-          thinking: props.state.thinking,
+      ...blocks.map(block => block.kind === 'work'
+        ? createElement('div', {
+          key: `work-${String(block.index)}`,
+          style: rowStyle('process'),
+        }, createElement(WorkGroup, {
+          rows: block.rows,
+          streaming: block.streaming,
+          active: block.active,
           copy: props.copy,
-          open: thinkingOpen,
-          onToggle: () => { setThinkingOpen(!thinkingOpen) },
-        }) : null,
+        }))
+        : createElement(MessageRow, {
+          key: block.message.id,
+          message: block.message,
+          marker: live === undefined && block.index === lastAssistant,
+          labels: markdownLabels,
+          openExternalLink,
+          copy: props.copy,
+        })),
       live !== undefined ? createElement('div', { style: rowStyle('assistant') },
         createElement('div', {
           'data-testid': 'pixies-bubble',

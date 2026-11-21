@@ -775,9 +775,10 @@ describe('mountPixiesShell with the shell bridge (phase 3)', () => {
     expect(finals).toEqual(['你好世界'])
     expect(calls).toEqual(['startSpeech', 'stopSpeech'])
     expect(mic().hasAttribute('data-active')).toBe(false)
-    // A delivered transcript now waits for the agent: the thinking bubble
-    // bridges that gap instead of making the panel look idle.
-    expect(container.querySelector('[data-testid="pixies-bubble"]')?.textContent)
+    // A delivered transcript now waits for the agent: the work group reports
+    // the running turn instead of a separate thinking bubble.
+    expect(container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    expect(container.querySelector('[data-testid="pixies-work-title"]')?.textContent)
       .toBe(defaultPixiesMessages.thinking)
 
     // Second round: a partial then an error also ends the round without firing.
@@ -853,7 +854,7 @@ describe('mountPixiesShell with the shell bridge (phase 3)', () => {
     container.remove()
   })
 
-  it('keeps the reasoning stream collapsed by default and expands on click', () => {
+  it('reports thinking in the work group and switches its label once settled', () => {
     const store = createPixiesStore()
     const container = document.createElement('div')
     document.body.appendChild(container)
@@ -861,33 +862,36 @@ describe('mountPixiesShell with the shell bridge (phase 3)', () => {
     let disposer: (() => void) | undefined
     act(() => { disposer = mountPixiesShell(container, store, defaultPixiesMessages, bridge) })
     act(() => { emitMode('expanded') })
-    expect(container.querySelector('[data-testid="pixies-thinking"]')).toBeNull()
+    // No separate thinking bubble, and no group before anything happens.
+    expect(container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    expect(container.querySelector('[data-testid="pixies-work-group"]')).toBeNull()
 
     act(() => { store.appendThinking('s', '先看项目') })
-    const thinking = (): Element => container.querySelector('[data-testid="pixies-thinking"]')!
-    const toggle = (): Element => thinking().querySelector('[data-testid="pixies-thinking-toggle"]')!
-    expect(thinking().hasAttribute('data-streaming')).toBe(true)
-    expect(thinking().querySelector('[data-testid="pixies-thinking-body"]')).toBeNull()
+    const group = (): Element => container.querySelector('[data-testid="pixies-work-group"]')!
+    const title = (): string => group().querySelector('[data-testid="pixies-work-title"]')?.textContent ?? ''
+    const toggle = (): Element => group().querySelector('[data-testid="pixies-work-toggle"]')!
+    expect(group().hasAttribute('data-active')).toBe(true)
+    expect(title()).toBe(defaultPixiesMessages.thinking)
+    expect(group().textContent).toContain(defaultPixiesMessages.thinkingStreaming)
     expect(toggle().getAttribute('aria-expanded')).toBe('false')
-    expect(toggle().getAttribute('aria-label')).toBe(defaultPixiesMessages.showThinking)
+    expect(toggle().getAttribute('aria-label')).toBe(defaultPixiesMessages.showProcess)
+    expect(group().querySelector('[data-testid="pixies-work-items"]')).toBeNull()
 
     fireEvent.click(toggle())
-    expect(toggle().getAttribute('aria-expanded')).toBe('true')
-    expect(thinking().querySelector('[data-testid="pixies-thinking-body"]')?.textContent).toBe('先看项目')
+    const row = (): Element => group().querySelector('[data-testid="pixies-process-row"]')!
+    expect(row().getAttribute('data-kind')).toBe('thinking')
+    fireEvent.click(row().querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(row().querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('先看项目')
 
     act(() => { store.appendThinking('s', '再查日志') })
-    expect(thinking().querySelector('[data-testid="pixies-thinking-body"]')?.textContent)
+    expect(row().querySelector('[data-testid="pixies-process-body"]')?.textContent)
       .toBe('先看项目再查日志')
 
     act(() => { store.settleThinking('s', '先看项目，再查日志') })
-    // Settled reasoning becomes a transcript row; the global stream hands over.
-    expect(container.querySelector('[data-testid="pixies-thinking"]')).toBeNull()
-    const row = container.querySelector('[data-testid="pixies-process-row"]')!
-    expect(row.getAttribute('data-kind')).toBe('thinking')
-    expect(row.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
-    fireEvent.click(row.querySelector('[data-testid="pixies-process-toggle"]')!)
-    expect(row.querySelector('[data-testid="pixies-process-body"]')?.textContent)
-      .toBe('先看项目，再查日志')
+    expect(group().hasAttribute('data-active')).toBe(false)
+    expect(title()).toBe(defaultPixiesMessages.thinkingProcess)
+    expect(group().textContent).toContain(defaultPixiesMessages.thinkingDone)
+    expect(container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
     act(() => { disposer?.() })
     container.remove()
   })
@@ -1711,7 +1715,8 @@ describe('expanded conversation interactions', () => {
     expect(stop).not.toBeNull()
     expect(stop.getAttribute('aria-label')).toBe(defaultPixiesMessages.stop)
     expect(b.container.querySelector('[data-testid="pixies-send"]')).toBeNull()
-    expect(b.container.querySelector('[data-testid="pixies-bubble"]')?.textContent)
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    expect(b.container.querySelector('[data-testid="pixies-work-title"]')?.textContent)
       .toBe(defaultPixiesMessages.thinking)
 
     fireEvent.click(stop)
@@ -1731,10 +1736,12 @@ describe('expanded conversation interactions', () => {
     b.dispose()
   })
 
-  it('renders the assistant reply and the thinking state as a status bubble', () => {
+  it('renders the assistant reply without a separate thinking status bubble', () => {
     const b = bench()
     act(() => { b.store.beginThinking('session-1') })
-    expect(b.container.querySelector('[data-testid="pixies-bubble"]')?.getAttribute('data-mood')).toBe('thinking')
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    expect(b.container.querySelector('[data-testid="pixies-work-title"]')?.textContent)
+      .toBe(defaultPixiesMessages.thinking)
     act(() => {
       b.store.speak({
         id: 'session-1#2', sessionId: 'session-1', character: 'spider-man',
@@ -1742,6 +1749,8 @@ describe('expanded conversation interactions', () => {
       })
     })
     expect(b.container.querySelector('[data-testid="pixies-bubble"]')?.textContent).toBe('我在这儿')
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')?.getAttribute('data-mood'))
+      .not.toBe('thinking')
     b.dispose()
   })
 
@@ -1792,10 +1801,17 @@ describe('voice-command shortcut and spoken replies', () => {
     })
   }
 
-  /** DOM order of work rows and assistant replies in the transcript. */
+  /** DOM order of work groups and assistant replies in the transcript. */
   function transcriptOrder(container: HTMLElement): string[] {
-    return Array.from(container.querySelectorAll('[data-testid="pixies-process-row"], [data-role="assistant"]'))
-      .map(node => node.getAttribute('data-role') === 'assistant' ? 'reply' : 'pixies-process-row')
+    return Array.from(container.querySelectorAll('[data-testid="pixies-work-group"], [data-role="assistant"]'))
+      .map(node => node.getAttribute('data-role') === 'assistant' ? 'reply' : 'work')
+  }
+
+  /** Open one outer work group and return its ordered rows. */
+  function openWorkGroup(container: HTMLElement, index = 0): NodeListOf<Element> {
+    const group = container.querySelectorAll('[data-testid="pixies-work-group"]')[index]!
+    fireEvent.click(group.querySelector('[data-testid="pixies-work-toggle"]')!)
+    return group.querySelectorAll('[data-testid="pixies-process-row"]')
   }
 
   /** Mount in expanded mode with the recording bridge. */
@@ -1926,10 +1942,11 @@ describe('voice-command shortcut and spoken replies', () => {
     expect(container.textContent).toContain('核对过程')
     expect(container.textContent).toContain('第二条证据')
     expect(container.textContent).toContain('完整结论正文')
-    const row = container.querySelector('[data-testid="pixies-process-row"]')!
-    expect(row).not.toBeNull()
-    fireEvent.click(row.querySelector('[data-testid="pixies-process-toggle"]')!)
-    expect(row.querySelector('[data-testid="pixies-process-body"]')?.textContent)
+    const group = container.querySelector('[data-testid="pixies-work-group"]')!
+    expect(group).not.toBeNull()
+    const rows = openWorkGroup(container)
+    fireEvent.click(rows[0]!.querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(rows[0]!.querySelector('[data-testid="pixies-process-body"]')?.textContent)
       .toBe('先核对证据，再组织结论')
     expect(container.textContent).not.toContain('[voice]')
 
@@ -1937,7 +1954,7 @@ describe('voice-command shortcut and spoken replies', () => {
     container.remove()
   })
 
-  it('keeps every turn\'s process at its own position in the transcript', () => {
+  it('keeps every turn\'s work in its own group at its own position', () => {
     const b = expandedBench()
     act(() => { b.store.settleThinking('s', '第一轮推理') })
     act(() => { speak(b.store, 'session-1#1', '第一条回复') })
@@ -1945,18 +1962,19 @@ describe('voice-command shortcut and spoken replies', () => {
     act(() => { b.store.settleThinking('s', '第二轮推理') })
     act(() => { speak(b.store, 'session-1#2', '第二条回复') })
 
-    const rows = b.container.querySelectorAll('[data-testid="pixies-process-row"]')
-    expect(rows).toHaveLength(2)
-    const toggle = (node: Element): Element => node.querySelector('[data-testid="pixies-process-toggle"]')!
-    fireEvent.click(toggle(rows[0]!))
-    expect(rows[0]!.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('第一轮推理')
-    // Rows are independent: expanding one never expands another.
-    expect(rows[1]!.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
-    fireEvent.click(toggle(rows[1]!))
-    expect(rows[1]!.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('第二轮推理')
+    expect(b.container.querySelectorAll('[data-testid="pixies-work-group"]')).toHaveLength(2)
+    const firstRows = openWorkGroup(b.container, 0)
+    const secondRows = openWorkGroup(b.container, 1)
+    expect(firstRows).toHaveLength(1)
+    expect(secondRows).toHaveLength(1)
+    fireEvent.click(firstRows[0]!.querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(firstRows[0]!.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('第一轮推理')
+    // Groups and rows are independent: expanding one never expands another.
+    expect(secondRows[0]!.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
+    fireEvent.click(secondRows[0]!.querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(secondRows[0]!.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('第二轮推理')
 
-    expect(transcriptOrder(b.container))
-      .toEqual(['pixies-process-row', 'reply', 'pixies-process-row', 'reply'])
+    expect(transcriptOrder(b.container)).toEqual(['work', 'reply', 'work', 'reply'])
     b.dispose()
   })
 
@@ -1968,15 +1986,18 @@ describe('voice-command shortcut and spoken replies', () => {
         { id: 'history-1', role: 'assistant', text: '历史回复', mood: 'neutral', at: 2 },
       ])
     })
-    const row = b.container.querySelector('[data-testid="pixies-process-row"]')!
-    expect(row).not.toBeNull()
-    expect(row.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
-    fireEvent.click(row.querySelector('[data-testid="pixies-process-toggle"]')!)
-    expect(row.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('历史推理')
+    const group = b.container.querySelector('[data-testid="pixies-work-group"]')!
+    expect(group).not.toBeNull()
+    expect(group.querySelector('[data-testid="pixies-process-row"]')).toBeNull()
+    const rows = openWorkGroup(b.container)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]!.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
+    fireEvent.click(rows[0]!.querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(rows[0]!.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('历史推理')
     b.dispose()
   })
 
-  it('renders each work row before the reply in execution order, collapsed by default', () => {
+  it('groups a turn\'s work before the reply with two-level disclosure', () => {
     const b = expandedBench()
     act(() => {
       feedSessionEvent(b.store, 's', { type: 'turn/start', seq: 1, data: { turn: 1 } })
@@ -1995,28 +2016,37 @@ describe('voice-command shortcut and spoken replies', () => {
     })
 
     expect(b.container.textContent).toContain('结果是 56088')
-    const rows = b.container.querySelectorAll('[data-testid="pixies-process-row"]')
+    const group = b.container.querySelector('[data-testid="pixies-work-group"]')!
+    expect(group).not.toBeNull()
+    expect(b.container.querySelectorAll('[data-testid="pixies-work-group"]')).toHaveLength(1)
+    // Level 1 is closed by default, and stays before the answer.
+    expect(group.querySelector('[data-testid="pixies-work-toggle"]')?.getAttribute('aria-expanded'))
+      .toBe('false')
+    expect(group.querySelector('[data-testid="pixies-work-toggle"]')?.getAttribute('aria-label'))
+      .toBe(defaultPixiesMessages.showProcess)
+    expect(group.querySelector('[data-testid="pixies-work-items"]')).toBeNull()
+    expect(transcriptOrder(b.container)).toEqual(['work', 'reply'])
+
+    // Level 1 open: every ordered row appears, each still closed.
+    const rows = openWorkGroup(b.container)
     expect(rows).toHaveLength(3)
     expect(Array.from(rows).map(row => row.getAttribute('data-kind')))
       .toEqual(['thinking', 'tool-call', 'tool-result'])
-    // Work precedes the answer rather than being folded underneath it.
-    expect(transcriptOrder(b.container)).toEqual([
-      'pixies-process-row', 'pixies-process-row', 'pixies-process-row', 'reply',
-    ])
     for (const row of rows) {
-      const toggle = row.querySelector('[data-testid="pixies-process-toggle"]')!
-      expect(toggle.getAttribute('aria-expanded')).toBe('false')
-      expect(toggle.getAttribute('aria-label')).toBe(defaultPixiesMessages.showProcess)
+      expect(row.querySelector('[data-testid="pixies-process-toggle"]')?.getAttribute('aria-expanded'))
+        .toBe('false')
       expect(row.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
     }
     expect(rows[0]!.textContent).toContain('先算一下')
     expect(rows[1]!.textContent).toContain('bash({"command":"123 * 456"})')
     expect(rows[2]!.textContent).toContain('56088')
 
+    // Level 2: clicking one row opens only that row's detail.
     fireEvent.click(rows[1]!.querySelector('[data-testid="pixies-process-toggle"]')!)
     expect(rows[1]!.querySelector('[data-testid="pixies-process-body"]')?.textContent)
       .toBe('bash({"command":"123 * 456"})')
     expect(rows[0]!.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
+    expect(rows[2]!.querySelector('[data-testid="pixies-process-body"]')).toBeNull()
     b.dispose()
   })
 
@@ -2035,10 +2065,11 @@ describe('voice-command shortcut and spoken replies', () => {
       ] } } })
       feedSessionEvent(b.store, 's', { type: 'turn/end', seq: 4, data: { turn: 1 } })
     })
-    const rows = b.container.querySelectorAll('[data-testid="pixies-process-row"]')
+    const rows = openWorkGroup(b.container)
     expect(Array.from(rows).map(row => row.getAttribute('data-kind')))
       .toEqual(['thinking', 'tool-call', 'tool-result'])
     expect(b.container.querySelector('[data-role="assistant"]')).toBeNull()
+    expect(transcriptOrder(b.container)).toEqual(['work'])
     b.dispose()
   })
 
@@ -2052,15 +2083,32 @@ describe('voice-command shortcut and spoken replies', () => {
         { id: 'history-3', role: 'assistant', text: '历史回复', mood: 'neutral', at: 4 },
       ])
     })
-    const rows = b.container.querySelectorAll('[data-testid="pixies-process-row"]')
+    const rows = openWorkGroup(b.container)
     expect(rows).toHaveLength(3)
     expect(Array.from(rows).map(row => row.getAttribute('data-kind')))
       .toEqual(['thinking', 'tool-call', 'tool-result'])
-    expect(transcriptOrder(b.container)).toEqual([
-      'pixies-process-row', 'pixies-process-row', 'pixies-process-row', 'reply',
-    ])
+    expect(transcriptOrder(b.container)).toEqual(['work', 'reply'])
     fireEvent.click(rows[1]!.querySelector('[data-testid="pixies-process-toggle"]')!)
     expect(rows[1]!.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('bash(echo hi)')
+    b.dispose()
+  })
+
+  it('never shows a thinking bubble; the work group carries the state', () => {
+    const b = expandedBench()
+    const title = (): string => b.container.querySelector('[data-testid="pixies-work-title"]')?.textContent ?? ''
+    act(() => { b.store.beginThinking('s') })
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    expect(title()).toBe(defaultPixiesMessages.thinking)
+
+    act(() => { b.store.appendThinking('s', '先看证据') })
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    expect(title()).toBe(defaultPixiesMessages.thinking)
+    expect(b.container.querySelector('[data-testid="pixies-work-group"]')?.hasAttribute('data-active'))
+      .toBe(true)
+
+    act(() => { b.store.settleThinking('s', '先看证据') })
+    expect(title()).toBe(defaultPixiesMessages.thinkingProcess)
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
     b.dispose()
   })
 
@@ -2087,12 +2135,17 @@ describe('voice-command shortcut and spoken replies', () => {
     b.dispose()
   })
 
-  it('keeps the live thinking bubble as a card while replies stay flat', () => {
+  it('lists live reasoning in the work group instead of a card bubble', () => {
     const b = expandedBench()
     act(() => { b.store.beginThinking('s') })
-    const live = b.container.querySelector('[data-testid="pixies-bubble"]') as HTMLElement
-    expect(live.style.background.replace(/\s+/g, '')).toContain('rgba(255,255,255,0.09)')
-    expect(live.style.borderRadius).toBe('14px')
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    act(() => { b.store.appendThinking('s', '正在整理证据') })
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    const group = b.container.querySelector('[data-testid="pixies-work-group"]')!
+    fireEvent.click(group.querySelector('[data-testid="pixies-work-toggle"]')!)
+    const row = group.querySelector('[data-testid="pixies-process-row"]')!
+    fireEvent.click(row.querySelector('[data-testid="pixies-process-toggle"]')!)
+    expect(row.querySelector('[data-testid="pixies-process-body"]')?.textContent).toBe('正在整理证据')
     b.dispose()
   })
 
@@ -2163,14 +2216,17 @@ describe('voice-command shortcut and spoken replies', () => {
     container.remove()
   })
 
-  it('keeps the thinking bubble while the host reports a mid-turn session', () => {
+  it('keeps the work group in progress while the host reports a mid-turn session', () => {
     const b = expandedBench()
     act(() => { b.store.beginThinking('session-1') })
     expect(b.container.textContent).toContain(defaultPixiesMessages.statusThinking)
-    expect(b.container.querySelector('[data-testid="pixies-bubble"]')?.textContent)
+    expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    expect(b.container.querySelector('[data-testid="pixies-work-title"]')?.textContent)
       .toBe(defaultPixiesMessages.thinking)
     act(() => { b.store.endThinking('session-1') })
     expect(b.container.querySelector('[data-testid="pixies-bubble"]')).toBeNull()
+    expect(b.container.querySelector('[data-testid="pixies-work-group"]')?.hasAttribute('data-active'))
+      .not.toBe(true)
     b.dispose()
   })
 

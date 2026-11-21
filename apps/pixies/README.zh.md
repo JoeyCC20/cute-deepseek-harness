@@ -85,6 +85,7 @@ profile）、`electron-user-data`，以及自动补齐的 `office-skills`。启�
 - `scripts/dev.ts` — 构建 + 语音 helper 重编译 + 复用一次性项目 + LaunchServices 启动器。
 - `scripts/stage.ts` — profile/bundle 装配与 Office-skill 资产补齐。
 - `tests/` — chrome facade、转发器、图标、凭证注入与语音控制器的单元测试。
+- `docs/` — 面向 agent 的交接文档：架构、核心组件、功能介绍与行为/实现对照（[索引](docs/index.md)）。
 
 React 界面位于并列的新增插件 `packages/extensions/pixies/src/client`：`conversation.tsx`（头像、
 展开面板、可折叠的思考过程与历史抽屉）、`character.tsx`（插画级 SVG 面具、聆听与思考光环、语音播报开关）、`window-drag.ts`（带阈值的指针拖拽）、`store.ts`

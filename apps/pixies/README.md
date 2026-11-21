@@ -100,6 +100,7 @@ already present in the environment. `DEEPSEEK_API_KEY` is required for replies.
 - `scripts/dev.ts` — build + speech-helper rebuild + disposable-project reuse + LaunchServices launcher.
 - `scripts/stage.ts` — profile/bundle staging and Office-skill asset restoration.
 - `tests/` — unit tests for the chrome facade, forwarder, icons, keychain, and speech controller.
+- `docs/` — agent-facing handoff pages: architecture, core components, features, and the behavior/implementation map ([index](docs/index.md)).
 
 The React surfaces live in the sibling additive plugin `packages/extensions/pixies/src/client`:
 `conversation.tsx` (avatar, expanded panel, collapsible reasoning and history surfaces),
